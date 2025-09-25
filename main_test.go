@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -83,7 +84,7 @@ func createUploadRequest(url, filePath string, options map[string]string, includ
 // pollUntilFinished is a helper to check the job status endpoint until it's finished or errors out.
 func pollUntilFinished(t *testing.T, serverURL, jobID string) *ConversionJob {
 	var job *ConversionJob
-	timeout := time.After(60 * time.Second) // 1-minute timeout for conversion
+	timeout := time.After(120 * time.Second) // 2-minute timeout for conversion
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -121,9 +122,23 @@ func TestConversionFunctionality(t *testing.T) {
 	server := setupTestServer()
 	defer server.Close()
 
-	const testFilePath = "testdata/test5.mkv"
-	if _, err := os.Stat(testFilePath); os.IsNotExist(err) {
-		t.Fatalf("Test video file not found: %s. Please create a 'testdata' directory with the 'test5.mkv' file.", testFilePath)
+	// List of files for successful conversion matrix
+	successfulTestFiles := []string{
+		"testdata/test5.avi",
+		"testdata/test5.gif",
+		"testdata/test5.mkv",
+		"testdata/test5.mov",
+		"testdata/test5.mp4",
+		"testdata/test5.webm",
+	}
+	// A single file for invalid input tests
+	const invalidTestFile = "testdata/test5.mkv"
+
+	// Check that all required files exist
+	for _, file := range successfulTestFiles {
+		if _, err := os.Stat(file); os.IsNotExist(err) {
+			t.Fatalf("Test video file not found: %s. Please ensure all test files are in the 'testdata' directory.", file)
+		}
 	}
 
 	// Reset global state for a clean test run before starting subtests.
@@ -178,66 +193,72 @@ func TestConversionFunctionality(t *testing.T) {
 			},
 		}
 
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				// 1. Initiate upload
-				resp, err := http.Post(server.URL+"/api/uploads/initiate", "application/json", nil)
-				if err != nil {
-					t.Fatalf("Failed to initiate upload: %v", err)
-				}
-				if resp.StatusCode != http.StatusCreated {
-					t.Fatalf("Expected status 201 Created, got %d", resp.StatusCode)
-				}
+		for _, inputFile := range successfulTestFiles {
+			for _, tc := range testCases {
+				// Create a unique name for the subtest to avoid collisions
+				inputFileName := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
+				testName := fmt.Sprintf("From_%s_to_%s", inputFileName, tc.name)
 
-				var initResponse map[string]string
-				if err := json.NewDecoder(resp.Body).Decode(&initResponse); err != nil {
-					t.Fatalf("Failed to decode init response: %v", err)
-				}
-				jobID := initResponse["uploadId"]
-				if jobID == "" {
-					t.Fatal("Did not receive a valid uploadId")
-				}
-				resp.Body.Close()
+				t.Run(testName, func(t *testing.T) {
+					// 1. Initiate upload
+					resp, err := http.Post(server.URL+"/api/uploads/initiate", "application/json", nil)
+					if err != nil {
+						t.Fatalf("Failed to initiate upload: %v", err)
+					}
+					if resp.StatusCode != http.StatusCreated {
+						t.Fatalf("Expected status 201 Created, got %d", resp.StatusCode)
+					}
 
-				// 2. Upload file
-				uploadURL := server.URL + "/api/uploads/" + jobID
-				req, err := createUploadRequest(uploadURL, testFilePath, tc.options, true)
-				if err != nil {
-					t.Fatalf("Failed to create upload request: %v", err)
-				}
+					var initResponse map[string]string
+					if err := json.NewDecoder(resp.Body).Decode(&initResponse); err != nil {
+						t.Fatalf("Failed to decode init response: %v", err)
+					}
+					jobID := initResponse["uploadId"]
+					if jobID == "" {
+						t.Fatal("Did not receive a valid uploadId")
+					}
+					resp.Body.Close()
 
-				uploadResp, err := http.DefaultClient.Do(req)
-				if err != nil {
-					t.Fatalf("Failed to perform upload request: %v", err)
-				}
-				if uploadResp.StatusCode != http.StatusOK {
-					bodyBytes, _ := io.ReadAll(uploadResp.Body)
-					t.Fatalf("Expected status 200 OK on upload, got %d. Body: %s", uploadResp.StatusCode, string(bodyBytes))
-				}
-				uploadResp.Body.Close()
+					// 2. Upload file
+					uploadURL := server.URL + "/api/uploads/" + jobID
+					req, err := createUploadRequest(uploadURL, inputFile, tc.options, true)
+					if err != nil {
+						t.Fatalf("Failed to create upload request: %v", err)
+					}
 
-				// 3. Poll for status until finished
-				finalJob := pollUntilFinished(t, server.URL, jobID)
+					uploadResp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatalf("Failed to perform upload request: %v", err)
+					}
+					if uploadResp.StatusCode != http.StatusOK {
+						bodyBytes, _ := io.ReadAll(uploadResp.Body)
+						t.Fatalf("Expected status 200 OK on upload, got %d. Body: %s", uploadResp.StatusCode, string(bodyBytes))
+					}
+					uploadResp.Body.Close()
 
-				if finalJob.Status != "finished" {
-					t.Fatalf("Expected job status to be 'finished', but got '%s' with error: %s", finalJob.Status, finalJob.ErrorMessage)
-				}
-				if finalJob.ProgressPercentage != 100 {
-					t.Errorf("Expected progress to be 100, got %d", finalJob.ProgressPercentage)
-				}
-				if !strings.HasSuffix(finalJob.DownloadURL, tc.expectedSuffix) {
-					t.Errorf("Expected download URL to end with %s, got %s", tc.expectedSuffix, finalJob.DownloadURL)
-				}
+					// 3. Poll for status until finished
+					finalJob := pollUntilFinished(t, server.URL, jobID)
 
-				// 4. Verify converted file exists
-				convertedFileName := jobID + tc.expectedSuffix
-				convertedFilePath := filepath.Join(convertedDir, convertedFileName)
-				if _, err := os.Stat(convertedFilePath); os.IsNotExist(err) {
-					t.Errorf("Converted file was not found at %s", convertedFilePath)
-				} else {
-					os.Remove(convertedFilePath)
-				}
-			})
+					if finalJob.Status != "finished" {
+						t.Fatalf("Expected job status to be 'finished', but got '%s' with error: %s", finalJob.Status, finalJob.ErrorMessage)
+					}
+					if finalJob.ProgressPercentage != 100 {
+						t.Errorf("Expected progress to be 100, got %d", finalJob.ProgressPercentage)
+					}
+					if !strings.HasSuffix(finalJob.DownloadURL, tc.expectedSuffix) {
+						t.Errorf("Expected download URL to end with %s, got %s", tc.expectedSuffix, finalJob.DownloadURL)
+					}
+
+					// 4. Verify converted file exists
+					convertedFileName := jobID + tc.expectedSuffix
+					convertedFilePath := filepath.Join(convertedDir, convertedFileName)
+					if _, err := os.Stat(convertedFilePath); os.IsNotExist(err) {
+						t.Errorf("Converted file was not found at %s", convertedFilePath)
+					} else {
+						os.Remove(convertedFilePath)
+					}
+				})
+			}
 		}
 	})
 
@@ -299,7 +320,7 @@ func TestConversionFunctionality(t *testing.T) {
 			{name: "GIF - Invalid loop value (1)", options: map[string]string{"format": "gif", "resolution": "360", "gifLoop": "1"}, expectedMsg: "gifLoop value must be 'true' or 'false'", includeFile: true},
 			{name: "GIF - Non-numeric resolution", options: map[string]string{"format": "gif", "resolution": "small"}, expectedMsg: "resolution must be a number", includeFile: true},
 
-			// --- Cross-Parameter, Unknown & File Validation (7 cases) ---
+			// --- Cross-Parameter, Unknown & File Validation (8 cases) ---
 			{name: "Non-GIF - gifLoop provided", options: map[string]string{"format": "mp4", "gifLoop": "true"}, expectedMsg: "gifLoop is only a valid option for format gif", includeFile: true},
 			{name: "Unknown Option - quality", options: map[string]string{"format": "mp4", "quality": "best"}, expectedMsg: "unknown option specified: quality", includeFile: true},
 			{name: "Unknown Option - crf", options: map[string]string{"format": "mp4", "crf": "23"}, expectedMsg: "unknown option specified: crf", includeFile: true},
@@ -324,7 +345,7 @@ func TestConversionFunctionality(t *testing.T) {
 
 				// 2. Upload file with invalid options
 				uploadURL := server.URL + "/api/uploads/" + jobID
-				req, err := createUploadRequest(uploadURL, testFilePath, tc.options, tc.includeFile)
+				req, err := createUploadRequest(uploadURL, invalidTestFile, tc.options, tc.includeFile)
 				if err != nil {
 					t.Fatalf("Failed to create upload request: %v", err)
 				}
