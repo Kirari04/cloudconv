@@ -1,0 +1,11 @@
+services:
+  cloudconv:
+    image: kirari04/cloudconv:latest
+    ports:
+      - 3000:3000
+    volumes:
+      - ./uploads:/app/uploads
+      - ./converted:/app/converted
+    restart: always
+    environment:
+      - TZ=Europe/Berlin
