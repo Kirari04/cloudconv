@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"html/template"
 	"io"
 	"log"
 	"net"
@@ -23,74 +21,299 @@ import (
 	"github.com/google/uuid"
 )
 
-// --- 1. Constants and Global Variables ---
 const (
 	uploadDir    = "uploads"
 	convertedDir = "converted"
-	port         = "3000"
 )
 
-// ConversionJob represents the state of a single video conversion task.
+// ConversionJob holds the state of a single conversion task.
 type ConversionJob struct {
-	ID                   string            `json:"id"`
-	Status               string            `json:"status"` // idle, queued, converting, finished, error
-	QueuePosition        int               `json:"queuePosition,omitempty"`
-	ProgressPercentage   int               `json:"progressPercentage"`
-	ConversionOptions    map[string]string `json:"-"` // Internal use for worker
-	TotalDurationSeconds float64           `json:"-"`
-	InputPath            string            `json:"-"`
-	OutputPath           string            `json:"-"`
-	DownloadURL          string            `json:"downloadUrl,omitempty"`
-	ErrorMessage         string            `json:"error,omitempty"`
-	CreationTime         time.Time         `json:"-"` // Time the conversion finished
+	ID                 string        `json:"id"`
+	Status             string        `json:"status"` // idle, queued, converting, finished, error
+	ProgressPercentage int           `json:"progressPercentage"`
+	DownloadURL        string        `json:"downloadUrl,omitempty"`
+	ErrorMessage       string        `json:"error,omitempty"`
+	QueuePosition      int           `json:"queuePosition,omitempty"`
+	OriginalFilename   string        `json:"-"`
+	TargetFormat       string        `json:"-"`
+	Options            FFmpegOptions `json:"-"`
+	CreatedAt          time.Time     `json:"-"`
 }
 
-// Structs for parsing ffprobe's JSON output
-type ffprobeFormat struct {
-	Duration string `json:"duration"`
-}
-type ffprobeOutput struct {
-	Format ffprobeFormat `json:"format"`
+// FFmpegOptions holds all the user-configurable conversion settings.
+type FFmpegOptions struct {
+	Resolution   string
+	Bitrate      string
+	Framerate    string
+	AudioBitrate string
+	GifLoop      bool
 }
 
-// In-memory store and queue for conversion jobs.
 var (
-	templates     *template.Template
 	jobStore      = make(map[string]*ConversionJob)
-	jobStoreMux   sync.RWMutex
-	jobQueue      []string // A slice of job IDs
-	jobQueueMutex sync.Mutex
+	jobQueue      []string
+	jobStoreMutex = &sync.RWMutex{}
+	jobQueueMutex = &sync.Mutex{}
+	activeJob     = &sync.Mutex{}
 )
 
-// --- 2. Main Function ---
+// Main function to set up the server.
 func main() {
 	setupDirectories()
-	parseTemplates()
-
-	// Start the worker goroutines
-	go worker()
-	go cleanupWorker()
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
 
-	r.Get("/", homeHandler)
-	r.Route("/api/uploads", func(r chi.Router) {
-		r.Post("/initiate", initiateUploadHandler)
-		r.Post("/{uploadId}", fileUploadHandler)
-		r.Get("/{uploadId}/status", statusHandler)
+	// API routes
+	r.Post("/api/uploads/initiate", initiateUploadHandler)
+	r.Post("/api/uploads/{uploadId}", fileUploadHandler)
+	r.Get("/api/uploads/{uploadId}/status", statusHandler)
+
+	// Serve static files (converted videos)
+	fs := http.FileServer(http.Dir(convertedDir))
+	r.Handle("/converted/*", http.StripPrefix("/converted/", fs))
+
+	// Serve the main HTML page
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "templates/index.html")
 	})
 
-	fs := http.FileServer(http.Dir(convertedDir))
-	r.Handle("/files/*", http.StripPrefix("/files/", fs))
+	// Start background workers
+	go worker()
+	go cleanupWorker()
 
-	log.Printf("Starting server on http://localhost:%s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	log.Println("Server starting on :3000")
+	if err := http.ListenAndServe(":3000", r); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
 
-// --- 3. Job Workers ---
+// setupDirectories ensures the necessary folders exist and are empty on startup.
+func setupDirectories() {
+	log.Println("Clearing temporary directories...")
+	os.RemoveAll(uploadDir)
+	os.RemoveAll(convertedDir)
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		log.Fatalf("Failed to create upload directory: %v", err)
+	}
+	if err := os.MkdirAll(convertedDir, 0755); err != nil {
+		log.Fatalf("Failed to create converted directory: %v", err)
+	}
+}
+
+// initiateUploadHandler creates a new job with a unique ID.
+func initiateUploadHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := uuid.New().String()
+	job := &ConversionJob{
+		ID:        jobID,
+		Status:    "idle",
+		CreatedAt: time.Now(),
+	}
+
+	jobStoreMutex.Lock()
+	jobStore[jobID] = job
+	jobStoreMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"uploadId": jobID})
+}
+
+// validateAndParseOptions checks all user inputs for validity and populates the FFmpegOptions struct.
+func validateAndParseOptions(r *http.Request) (FFmpegOptions, error) {
+	opts := FFmpegOptions{}
+
+	// Ensure no unknown options are passed
+	knownOptions := map[string]bool{
+		"format":       true,
+		"resolution":   true,
+		"bitrate":      true,
+		"audioBitrate": true,
+		"framerate":    true,
+		"gifLoop":      true,
+		"videoFile":    true, // multipart form field name
+	}
+	for key := range r.Form {
+		if !knownOptions[key] {
+			return opts, fmt.Errorf("unknown option specified: %s", key)
+		}
+	}
+
+	targetFormat := r.FormValue("format")
+	if targetFormat == "" {
+		return opts, fmt.Errorf("target format must be specified")
+	}
+	validFormats := []string{"mp4", "webm", "mov", "avi", "mkv", "gif"}
+	if !contains(validFormats, targetFormat) {
+		return opts, fmt.Errorf("invalid target format specified")
+	}
+
+	// Resolution validation
+	opts.Resolution = r.FormValue("resolution")
+	if opts.Resolution != "" {
+		validResolutions := []string{"1080", "720", "480", "360", "240"}
+		if _, err := strconv.Atoi(opts.Resolution); err != nil {
+			return opts, fmt.Errorf("resolution must be a number")
+		}
+		if !contains(validResolutions, opts.Resolution) {
+			return opts, fmt.Errorf("invalid resolution value")
+		}
+	}
+
+	// Bitrate validation (generic and audio)
+	bitrateStr := r.FormValue("bitrate")
+	if bitrateStr != "" {
+		val, err := strconv.Atoi(bitrateStr)
+		if err != nil {
+			return opts, fmt.Errorf("bitrate must be a number")
+		}
+		if val < 100 || val > 10000 {
+			return opts, fmt.Errorf("bitrate must be a number between 100 and 10000")
+		}
+		opts.Bitrate = bitrateStr
+	}
+
+	audioBitrateStr := r.FormValue("audioBitrate")
+	if audioBitrateStr != "" {
+		val, err := strconv.Atoi(audioBitrateStr)
+		if err != nil {
+			return opts, fmt.Errorf("audio bitrate must be a number")
+		}
+		if val < 32 || val > 320 {
+			return opts, fmt.Errorf("audio bitrate must be a number between 32 and 320")
+		}
+		opts.AudioBitrate = audioBitrateStr
+	}
+
+	// Framerate validation
+	framerateStr := r.FormValue("framerate")
+	if framerateStr != "" {
+		val, err := strconv.Atoi(framerateStr)
+		if err != nil {
+			return opts, fmt.Errorf("framerate must be a number")
+		}
+		if val < 1 || val > 60 {
+			return opts, fmt.Errorf("framerate must be a number between 1 and 60")
+		}
+		opts.Framerate = framerateStr
+	}
+
+	// GIF-specific validation
+	if targetFormat == "gif" {
+		opts.GifLoop = r.FormValue("gifLoop") == "true"
+	}
+
+	return opts, nil
+}
+
+// fileUploadHandler handles the file upload and queues the conversion.
+func fileUploadHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "uploadId")
+	jobStoreMutex.Lock()
+	job, exists := jobStore[jobID]
+	if !exists {
+		jobStoreMutex.Unlock()
+		http.Error(w, "Invalid upload session.", http.StatusNotFound)
+		return
+	}
+	jobStoreMutex.Unlock()
+
+	// Parse multipart form
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB max file size
+		http.Error(w, "Could not parse multipart form.", http.StatusBadRequest)
+		return
+	}
+
+	// Validate all options before proceeding
+	opts, err := validateAndParseOptions(r)
+	if err != nil {
+		job.Status = "error"
+		job.ErrorMessage = err.Error()
+		jobStoreMutex.Lock()
+		jobStore[jobID] = job
+		jobStoreMutex.Unlock()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("videoFile")
+	if err != nil {
+		http.Error(w, "Could not retrieve file.", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Use jobID to create a secure filename, preserving the original extension
+	ext := filepath.Ext(header.Filename)
+	safeFilename := jobID + ext
+	filePath := filepath.Join(uploadDir, safeFilename)
+
+	dst, err := os.Create(filePath)
+	if err != nil {
+		http.Error(w, "Could not save file.", http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		http.Error(w, "Could not write file to disk.", http.StatusInternalServerError)
+		return
+	}
+
+	// Update job with parsed info and add to queue
+	job.OriginalFilename = safeFilename
+	job.TargetFormat = r.FormValue("format")
+	job.Options = opts
+	job.Status = "queued"
+
+	jobQueueMutex.Lock()
+	jobQueue = append(jobQueue, jobID)
+	job.QueuePosition = len(jobQueue)
+	jobQueueMutex.Unlock()
+
+	jobStoreMutex.Lock()
+	jobStore[jobID] = job
+	jobStoreMutex.Unlock()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "Upload complete, conversion is queued."})
+}
+
+// statusHandler returns the current status of a job.
+func statusHandler(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "uploadId")
+
+	jobStoreMutex.RLock()
+	job, exists := jobStore[jobID]
+	jobStoreMutex.RUnlock()
+
+	if !exists {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+
+	// Update queue position if the job is still queued
+	if job.Status == "queued" {
+		jobQueueMutex.Lock()
+		for i, id := range jobQueue {
+			if id == jobID {
+				job.QueuePosition = i + 1
+				break
+			}
+		}
+		jobQueueMutex.Unlock()
+		jobStoreMutex.Lock()
+		jobStore[jobID] = job
+		jobStoreMutex.Unlock()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(job)
+}
+
+// worker processes jobs from the queue one by one.
 func worker() {
 	log.Println("Conversion worker started.")
 	for {
@@ -98,320 +321,186 @@ func worker() {
 
 		jobQueueMutex.Lock()
 		if len(jobQueue) > 0 {
-			// Dequeue the job ID
 			jobID = jobQueue[0]
 			jobQueue = jobQueue[1:]
 		}
 		jobQueueMutex.Unlock()
 
 		if jobID != "" {
-			job, exists := getJob(jobID)
-			if !exists {
-				log.Printf("Worker: Job %s not found in store, skipping.", jobID)
-				continue
-			}
-			// Process the job
-			convertVideo(job)
+			activeJob.Lock()
+			processJob(jobID)
+			activeJob.Unlock()
 		} else {
-			// Wait if the queue is empty
 			time.Sleep(1 * time.Second)
 		}
 	}
 }
 
-func cleanupWorker() {
-	log.Println("Cleanup worker started.")
-	// Ticker will run the check every 5 minutes.
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		jobStoreMux.Lock()
-		for id, job := range jobStore {
-			// Check for finished jobs older than 1 hour
-			if job.Status == "finished" && time.Since(job.CreationTime) > 1*time.Hour {
-				log.Printf("Cleanup worker: Deleting old converted file %s for job %s.", job.OutputPath, id)
-				// Best-effort deletion, log error if it fails but don't block.
-				if err := os.Remove(job.OutputPath); err != nil && !os.IsNotExist(err) {
-					log.Printf("Cleanup worker: ERROR failed to delete file %s: %v", job.OutputPath, err)
-				}
-				// Also remove the job from the store to prevent memory leak
-				delete(jobStore, id)
-			}
-		}
-		jobStoreMux.Unlock()
-	}
-}
-
-// --- 4. Route Handlers ---
-func homeHandler(w http.ResponseWriter, r *http.Request) {
-	if err := templates.ExecuteTemplate(w, "index.html", nil); err != nil {
-		http.Error(w, "Failed to render page", http.StatusInternalServerError)
-	}
-}
-
-func initiateUploadHandler(w http.ResponseWriter, r *http.Request) {
-	jobID := uuid.New().String()
-	job := &ConversionJob{ID: jobID, Status: "idle"}
-	jobStoreMux.Lock()
+// processJob handles the conversion logic for a single job.
+func processJob(jobID string) {
+	jobStoreMutex.Lock()
+	job := jobStore[jobID]
+	job.Status = "converting"
+	job.QueuePosition = 0
 	jobStore[jobID] = job
-	jobStoreMux.Unlock()
-	respondWithJSON(w, http.StatusCreated, map[string]string{"uploadId": jobID})
+	jobStoreMutex.Unlock()
+
+	err := convertVideo(job)
+
+	jobStoreMutex.Lock()
+	// Re-fetch job to avoid race conditions
+	job = jobStore[jobID]
+	if err != nil {
+		log.Printf("FFmpeg failed for job %s: %v", job.ID, err)
+		job.Status = "error"
+		job.ErrorMessage = err.Error()
+	} else {
+		log.Printf("[Job %s] Successfully converted file.", job.ID)
+		job.Status = "finished"
+		job.DownloadURL = fmt.Sprintf("/converted/%s.%s", job.ID, job.TargetFormat)
+		job.ProgressPercentage = 100
+	}
+	jobStore[jobID] = job
+	jobStoreMutex.Unlock()
+
+	// Clean up original uploaded file immediately after conversion attempt
+	uploadedFilePath := filepath.Join(uploadDir, job.OriginalFilename)
+	if err := os.Remove(uploadedFilePath); err != nil {
+		log.Printf("Warning: Failed to delete uploaded file %s: %v", uploadedFilePath, err)
+	}
 }
 
-func fileUploadHandler(w http.ResponseWriter, r *http.Request) {
-	uploadID := chi.URLParam(r, "uploadId")
-	job, exists := getJob(uploadID)
-	if !exists {
-		http.Error(w, "Upload session not found", http.StatusNotFound)
-		return
-	}
+// convertVideo uses FFmpeg to perform the video conversion.
+func convertVideo(job *ConversionJob) error {
+	inputPath := filepath.Join(uploadDir, job.OriginalFilename)
+	outputPath := filepath.Join(convertedDir, fmt.Sprintf("%s.%s", job.ID, job.TargetFormat))
 
-	if err := r.ParseMultipartForm(500 << 20); err != nil { // 500 MB limit
-		handleUploadError(w, job.ID, "File is too large (max 500MB).", http.StatusBadRequest)
-		return
-	}
-
-	file, handler, err := r.FormFile("videoFile")
+	// Get video duration for progress calculation
+	duration, err := getVideoDuration(inputPath)
 	if err != nil {
-		handleUploadError(w, job.ID, "Could not retrieve file.", http.StatusBadRequest)
-		return
-	}
-	defer file.Close()
-
-	options := map[string]string{
-		"format":       r.FormValue("format"),
-		"resolution":   r.FormValue("resolution"),
-		"bitrate":      r.FormValue("bitrate"),
-		"framerate":    r.FormValue("framerate"),
-		"audioBitrate": r.FormValue("audioBitrate"),
-		"gifLoop":      r.FormValue("gifLoop"),
-	}
-	if err := validateOptions(options); err != nil {
-		handleUploadError(w, job.ID, err.Error(), http.StatusBadRequest)
-		return
+		return fmt.Errorf("failed to get video duration: %w", err)
 	}
 
-	fileExtension := filepath.Ext(handler.Filename)
-	safeFilename := uploadID + fileExtension
-	inputPath := filepath.Join(uploadDir, safeFilename)
-	dst, err := os.Create(inputPath)
-	if err != nil {
-		handleUploadError(w, job.ID, "Failed to save uploaded file.", http.StatusInternalServerError)
-		return
-	}
-	defer dst.Close()
-	io.Copy(dst, file)
-
-	// Add job to the queue
-	jobStoreMux.Lock()
-	job.InputPath = inputPath
-	job.ConversionOptions = options
-	job.Status = "queued"
-	jobStoreMux.Unlock()
-
-	jobQueueMutex.Lock()
-	jobQueue = append(jobQueue, job.ID)
-	jobQueueMutex.Unlock()
-
-	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Upload complete, conversion is queued."})
-}
-
-func statusHandler(w http.ResponseWriter, r *http.Request) {
-	uploadID := chi.URLParam(r, "uploadId")
-	job, exists := getJob(uploadID)
-	if !exists {
-		http.Error(w, "Job not found", http.StatusNotFound)
-		return
-	}
-
-	// If job is queued, calculate its position
-	if job.Status == "queued" {
-		jobQueueMutex.Lock()
-		position := 0
-		for i, id := range jobQueue {
-			if id == uploadID {
-				position = i + 1
-				break
-			}
-		}
-		job.QueuePosition = position
-		jobQueueMutex.Unlock()
-	}
-
-	respondWithJSON(w, http.StatusOK, job)
-}
-
-// --- 5. Helper and Business Logic Functions ---
-
-func convertVideo(job *ConversionJob) {
-	// Defer deletion of the original uploaded file.
-	// This will execute after the function returns, regardless of success or failure.
-	defer os.Remove(job.InputPath)
-
-	updateJobStatus(job.ID, "converting", "", 0)
-
-	duration, err := getVideoDuration(job.InputPath)
-	if err != nil {
-		log.Printf("[Job %s] ERROR: Failed to get video duration: %v", job.ID, err)
-		updateJobStatus(job.ID, "error", "Could not read video properties.", 0)
-		return
-	}
-	updateJobDuration(job.ID, duration)
-
-	socketPath := filepath.Join(os.TempDir(), job.ID+".sock")
+	// Setup Unix socket for progress reporting
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("%s.sock", job.ID))
+	_ = os.Remove(socketPath) // Clean up any old socket file
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		log.Printf("[Job %s] ERROR: Failed to create socket: %v", job.ID, err)
-		updateJobStatus(job.ID, "error", "Failed to initialize progress tracking.", 0)
-		return
+		return fmt.Errorf("failed to create progress socket: %w", err)
 	}
+	defer listener.Close()
 	defer os.Remove(socketPath)
-	go handleProgressConnection(listener, job)
 
-	targetFormat := job.ConversionOptions["format"]
-	outputFilename := strings.TrimSuffix(filepath.Base(job.InputPath), filepath.Ext(job.InputPath)) + "." + targetFormat
-	outputPath := filepath.Join(convertedDir, outputFilename)
+	go listenForProgress(listener, job, duration)
 
-	cmd := buildFFmpegCommand(job.InputPath, outputPath, targetFormat, job.ConversionOptions, socketPath)
-	log.Printf("[Job %s] Executing FFmpeg Command: %s", job.ID, cmd.String())
+	args := buildFFmpegCommand(inputPath, outputPath, job, socketPath)
 
+	log.Printf("[Job %s] Executing FFmpeg Command: %s %s", job.ID, "ffmpeg", strings.Join(args, " "))
+
+	cmd := exec.Command("ffmpeg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("[Job %s] ERROR: FFmpeg command failed: %v\n--- FFmpeg Output ---\n%s\n---------------------", job.ID, err, string(output))
-		updateJobStatus(job.ID, "error", "Video conversion failed. Check server logs for details.", 0)
-		return
-	}
-
-	jobStoreMux.Lock()
-	defer jobStoreMux.Unlock()
-	if j, ok := jobStore[job.ID]; ok {
-		j.Status = "finished"
-		j.OutputPath = outputPath
-		j.DownloadURL = "/files/" + outputFilename
-		j.ProgressPercentage = 100
-		j.CreationTime = time.Now() // Record the time of successful conversion
-	}
-	log.Printf("[Job %s] Successfully converted file.", job.ID)
-}
-
-func buildFFmpegCommand(inputPath, outputPath, format string, options map[string]string, socketPath string) *exec.Cmd {
-	args := []string{"-i", inputPath, "-progress", "unix://" + socketPath}
-
-	if format == "gif" {
-		args = append(args, "-an") // No audio for GIFs
-		res := options["resolution"]
-		if res == "" {
-			res = "360"
-		}
-		fps := options["framerate"]
-		if fps == "" {
-			fps = "15"
-		}
-		if options["gifLoop"] != "false" {
-			args = append(args, "-loop", "0")
-		}
-		scaleFilter := fmt.Sprintf("scale=%s:-1:flags=lanczos", res)
-		complexFilter := fmt.Sprintf("fps=%s,%s,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", fps, scaleFilter)
-		args = append(args, "-vf", complexFilter)
-	} else {
-		// --- Video Codec and Options ---
-		switch format {
-		case "mp4", "mov", "mkv":
-			args = append(args, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p")
-		case "webm":
-			args = append(args, "-c:v", "libvpx") // VP8 is broadly compatible
-		case "avi":
-			args = append(args, "-c:v", "mpeg4")
-		}
-
-		videoFilters := []string{}
-		if res := options["resolution"]; res != "" {
-			videoFilters = append(videoFilters, fmt.Sprintf("scale=-2:%s", res))
-		}
-		if len(videoFilters) > 0 {
-			args = append(args, "-vf", strings.Join(videoFilters, ","))
-		}
-		if br := options["bitrate"]; br != "" {
-			args = append(args, "-b:v", br+"k")
-		}
-		if fr := options["framerate"]; fr != "" {
-			args = append(args, "-r", fr)
-		}
-
-		// --- Audio Codec and Options ---
-		switch format {
-		case "webm":
-			args = append(args, "-c:a", "libopus")
-		default:
-			args = append(args, "-c:a", "aac")
-		}
-		args = append(args, "-af", "aformat=channel_layouts='7.1|5.1|stereo'")
-
-		if abr := options["audioBitrate"]; abr != "" {
-			args = append(args, "-b:a", abr+"k")
-		}
-	}
-
-	args = append(args, "-y", outputPath) // Overwrite output file if it exists
-	return exec.Command("ffmpeg", args...)
-}
-
-func validateOptions(options map[string]string) error {
-	allowedFormats := map[string]bool{"mp4": true, "webm": true, "mov": true, "avi": true, "mkv": true, "gif": true}
-	if !allowedFormats[options["format"]] {
-		return errors.New("invalid target format specified")
-	}
-	if res := options["resolution"]; res != "" {
-		allowedResolutions := map[string]bool{"1080": true, "720": true, "480": true, "360": true, "240": true}
-		if !allowedResolutions[res] {
-			return errors.New("invalid resolution value")
-		}
-	}
-	if br := options["bitrate"]; br != "" {
-		brInt, err := strconv.Atoi(br)
-		if err != nil || brInt < 100 || brInt > 10000 {
-			return errors.New("bitrate must be a number between 100 and 10000")
-		}
-	}
-	if fr := options["framerate"]; fr != "" {
-		frInt, err := strconv.Atoi(fr)
-		if err != nil || frInt < 1 || frInt > 60 {
-			return errors.New("framerate must be a number between 1 and 60")
-		}
-	}
-	if abr := options["audioBitrate"]; abr != "" {
-		abrInt, err := strconv.Atoi(abr)
-		if err != nil || abrInt < 32 || abrInt > 320 {
-			return errors.New("audio bitrate must be a number between 32 and 320")
-		}
+		return fmt.Errorf("exit status %v\nOutput: %s", err, string(output))
 	}
 	return nil
 }
 
-func getVideoDuration(inputPath string) (float64, error) {
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", inputPath)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, err
+// buildFFmpegCommand constructs the FFmpeg command arguments.
+func buildFFmpegCommand(inputPath, outputPath string, job *ConversionJob, socketPath string) []string {
+	args := []string{"-i", inputPath, "-progress", "unix://" + socketPath}
+	opts := job.Options
+
+	var videoFilters []string
+
+	// Handle GIF specific case
+	if job.TargetFormat == "gif" {
+		args = append(args, "-an") // No audio for GIFs
+		loop := "0"                // Loop indefinitely
+		if !opts.GifLoop {
+			loop = "-1" // Do not loop
+		}
+		args = append(args, "-loop", loop)
+
+		fps := "15" // Default fps for GIF
+		if opts.Framerate != "" {
+			fps = opts.Framerate
+		}
+
+		resolution := opts.Resolution
+		if resolution == "" {
+			resolution = "360" // Default width for GIF
+		}
+
+		// Complex filter for high-quality GIF creation
+		filter := fmt.Sprintf("fps=%s,scale=%s:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", fps, resolution)
+		args = append(args, "-vf", filter)
+	} else {
+		// Generic video/audio options
+		// Video Codec
+		switch job.TargetFormat {
+		case "mp4", "mov", "mkv":
+			args = append(args, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p")
+		case "webm":
+			args = append(args, "-c:v", "libvpx")
+		case "avi":
+			args = append(args, "-c:v", "mpeg4")
+		}
+
+		// Resolution
+		if opts.Resolution != "" {
+			videoFilters = append(videoFilters, fmt.Sprintf("scale=-2:%s", opts.Resolution))
+		}
+		// Bitrate
+		if opts.Bitrate != "" {
+			args = append(args, "-b:v", opts.Bitrate+"k")
+		}
+		// Framerate
+		if opts.Framerate != "" {
+			args = append(args, "-r", opts.Framerate)
+		}
+
+		// Audio Codec and Options
+		switch job.TargetFormat {
+		case "webm":
+			args = append(args, "-c:a", "libopus")
+		default: // mp4, mov, avi, mkv
+			args = append(args, "-c:a", "aac")
+		}
+		// Always specify channel layout for compatibility
+		args = append(args, "-af", "aformat=channel_layouts='7.1|5.1|stereo'")
+
+		if opts.AudioBitrate != "" {
+			args = append(args, "-b:a", opts.AudioBitrate+"k")
+		}
 	}
 
-	var ffprobeData ffprobeOutput
-	if err := json.Unmarshal(output, &ffprobeData); err != nil {
-		return 0, err
+	if len(videoFilters) > 0 {
+		args = append(args, "-vf", strings.Join(videoFilters, ","))
 	}
 
-	duration, err := strconv.ParseFloat(ffprobeData.Format.Duration, 64)
+	args = append(args, "-y", outputPath)
+	return args
+}
+
+// getVideoDuration uses ffprobe to get the total duration of a video file in seconds.
+func getVideoDuration(filePath string) (float64, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("ffprobe failed: %s, %w", string(output), err)
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse duration: %w", err)
 	}
 	return duration, nil
 }
 
-func handleProgressConnection(listener net.Listener, job *ConversionJob) {
+// listenForProgress reads progress from the FFmpeg socket.
+func listenForProgress(listener net.Listener, job *ConversionJob, duration float64) {
 	conn, err := listener.Accept()
 	if err != nil {
-		log.Printf("[Job %s] Progress listener failed: %v", job.ID, err)
+		log.Printf("Error accepting progress connection for job %s: %v", job.ID, err)
 		return
 	}
 	defer conn.Close()
@@ -420,73 +509,56 @@ func handleProgressConnection(listener net.Listener, job *ConversionJob) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		parts := strings.Split(line, "=")
-		if len(parts) == 2 && parts[0] == "out_time_us" {
-			if progressTimeUs, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); err == nil {
-				currentTimeSeconds := progressTimeUs / 1_000_000
-				percentage := 0
-				if job.TotalDurationSeconds > 0 {
-					percentage = int((currentTimeSeconds / job.TotalDurationSeconds) * 100)
+		if len(parts) == 2 && parts[0] == "out_time_ms" {
+			if currentTimeUs, err := strconv.ParseFloat(parts[1], 64); err == nil {
+				progress := (currentTimeUs / 1000000.0) / duration * 100
+				if progress > 100 {
+					progress = 100
 				}
-				if percentage > 100 {
-					percentage = 100
+				jobStoreMutex.Lock()
+				// Check if job still exists before updating
+				if currentJob, ok := jobStore[job.ID]; ok {
+					currentJob.ProgressPercentage = int(progress)
+					jobStore[job.ID] = currentJob
 				}
-				updateJobStatus(job.ID, "converting", "", percentage)
+				jobStoreMutex.Unlock()
 			}
 		}
 	}
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if payload != nil {
-		json.NewEncoder(w).Encode(payload)
+// cleanupWorker periodically removes old converted files.
+func cleanupWorker() {
+	log.Println("Cleanup worker started.")
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		jobStoreMutex.Lock()
+		for id, job := range jobStore {
+			if job.Status == "finished" || job.Status == "error" {
+				if time.Since(job.CreatedAt) > 1*time.Hour {
+					log.Printf("Cleaning up old job: %s", id)
+					if job.DownloadURL != "" {
+						filePath := filepath.Join(convertedDir, filepath.Base(job.DownloadURL))
+						if err := os.Remove(filePath); err != nil {
+							log.Printf("Warning: Failed to delete old converted file %s: %v", filePath, err)
+						}
+					}
+					delete(jobStore, id)
+				}
+			}
+		}
+		jobStoreMutex.Unlock()
 	}
 }
 
-func getJob(jobID string) (*ConversionJob, bool) {
-	jobStoreMux.RLock()
-	defer jobStoreMux.RUnlock()
-	job, exists := jobStore[jobID]
-	return job, exists
-}
-
-func updateJobStatus(jobID, status, errorMessage string, progress int) {
-	jobStoreMux.Lock()
-	defer jobStoreMux.Unlock()
-	if job, exists := jobStore[jobID]; exists {
-		job.Status = status
-		job.ErrorMessage = errorMessage
-		job.ProgressPercentage = progress
+// contains checks if a string is in a slice of strings.
+func contains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
+			return true
+		}
 	}
-}
-
-func updateJobDuration(jobID string, duration float64) {
-	jobStoreMux.Lock()
-	defer jobStoreMux.Unlock()
-	if job, exists := jobStore[jobID]; exists {
-		job.TotalDurationSeconds = duration
-	}
-}
-
-func handleUploadError(w http.ResponseWriter, jobID, message string, statusCode int) {
-	updateJobStatus(jobID, "error", message, 0)
-	http.Error(w, message, statusCode)
-}
-
-func setupDirectories() {
-	log.Println("Clearing temporary directories...")
-	os.RemoveAll(uploadDir)
-	os.RemoveAll(convertedDir)
-
-	os.MkdirAll(uploadDir, os.ModePerm)
-	os.MkdirAll(convertedDir, os.ModePerm)
-}
-
-func parseTemplates() {
-	var err error
-	templates, err = template.ParseFiles("templates/index.html")
-	if err != nil {
-		log.Fatalf("Failed to parse templates: %v", err)
-	}
+	return false
 }
