@@ -1,71 +1,141 @@
-Go Video Converter
-==================
+# CloudConv - Web-Based Media Converter
+======================================
 
-This is a simple web-based video converter built with Go. It uses the `chi` router for handling HTTP requests and `ffmpeg` for the actual video conversion. The frontend is a single HTML page styled with Tailwind CSS.
+CloudConv is a powerful, self-hostable web-based media converter built with Go and FFmpeg. It provides a clean, modern interface to upload video files and convert them to various formats in real-time, with a robust backend that includes a job queue, progress tracking, and automatic cleanup.
 
-⚠️ Prerequisites
-----------------
+The application is fully containerized, making setup incredibly simple.
 
-Before you can run this application, you **MUST** have the following software installed on your system and available in your system's PATH:
+![CloudConv Screenshot](./example.png) <!-- Replace with a real screenshot if you have one -->
 
-1.  [**Go**](https://go.dev/doc/install "null") (version 1.18 or newer)
+## ✨ Features
 
-2.  [**FFmpeg**](https://ffmpeg.org/download.html "null") - This is the core engine that performs all video conversions. The Go application simply calls this command-line tool.
+-   **Modern Web UI**: A sleek, responsive interface built with Tailwind CSS.
+-   **Real-Time Progress**: Watch the upload and conversion progress live.
+-   **Job Queueing**: Handles multiple conversions sequentially.
+-   **Format Variety**: Convert to MP4, WebM, MOV, AVI, MKV, and animated GIF.
+-   **Customizable Outputs**: Control resolution, bitrate, framerate, and GIF loop settings.
+-   **Simple Setup**: Get up and running in minutes with Docker.
+-   **Automatic Cleanup**: Old jobs and files are automatically purged to save disk space.
 
-You can verify they are installed correctly by running `go version` and `ffmpeg -version` in your terminal.
+---
 
-⚙️ Setup & Installation
------------------------
+## 🚀 Getting Started (Recommended)
 
-1.  **Clone the Repository or Save the Files:** Download the files (`main.go`, `go.mod`, and the `templates/index.html` file) into a new project directory. Make sure to place `index.html` inside a `templates` subdirectory.
+The easiest and recommended way to run CloudConv is by using Docker. This method avoids the need to install Go or FFmpeg on your host machine.
 
-    Your project structure should look like this:
+### Prerequisites
 
+-   [Docker](https://docs.docker.com/get-docker/)
+-   [Docker Compose](https://docs.docker.com/compose/install/)
+
+### Installation
+
+1.  **Create a `docker-compose.yaml` file:**
+
+    Create a file named `docker-compose.yaml` and paste the following content into it:
+
+    ```yaml
+    services:
+      cloudconv:
+        image: kirari04/cloudconv:latest
+        ports:
+          - 3000:3000
+        volumes:
+          - ./uploads:/app/uploads
+          - ./converted:/app/converted
+        restart: always
+        environment:
+          - TZ=Europe/Berlin # Optional: Set your timezone
     ```
-    /video-converter
-    |-- go.mod
-    |-- main.go
-    |-- /templates
-        |-- index.html
 
+2.  **Create Local Directories:**
+
+    The Docker container needs directories on your host machine to store the uploaded and converted files.
+
+    ```bash
+    mkdir uploads converted
     ```
 
-2.  **Initialize Go Module & Tidy Dependencies:** Open your terminal in the root of the project directory (`/video-converter`) and run the following commands:
+3.  **Run the Application:**
 
+    Start the application using Docker Compose. It will pull the latest image from Docker Hub and start the container in the background.
+
+    ```bash
+    docker-compose up -d
     ```
-    # This will download the chi router dependency specified in go.mod
+
+4.  **Access CloudConv:**
+
+    Open your web browser and navigate to **http://localhost:3000**.
+
+---
+
+## 🔧 Manual Setup (For Development)
+
+If you prefer to run the application without Docker for development purposes, you can follow these steps.
+
+### Prerequisites
+
+-   [Go](https://go.dev/doc/install) (version 1.24 or newer)
+-   [FFmpeg](https://ffmpeg.org/download.html) (must be in your system's PATH)
+
+You can verify they are installed by running `go version` and `ffmpeg -version`.
+
+### Installation
+
+1.  **Clone the Repository:**
+
+    ```bash
+    git clone https://github.com/your-username/cloudconv.git
+    cd cloudconv
+    ```
+
+2.  **Install Dependencies:**
+
+    This will download the Go modules required by the project.
+
+    ```bash
     go mod tidy
-
     ```
 
-▶️ How to Run the Application
------------------------------
+3.  **Run the Application:**
 
-With Go and FFmpeg installed and the project set up, run the following command from the root of your project directory:
+    ```bash
+    go run main.go
+    ```
+
+    The server will start on `http://localhost:3000`.
+
+---
+
+## ⚙️ How to Use
+
+1.  Navigate to `http://localhost:3000`.
+2.  Click **"Select Video File"** to choose a file from your computer.
+3.  Select the desired **Target Format** from the dropdown menu.
+4.  (Optional) Adjust settings like resolution, bitrate, or GIF options.
+5.  Click **"Upload & Convert"**.
+6.  The UI will show the upload progress, followed by the conversion progress in real-time.
+7.  Once finished, a download link for the converted file will appear.
+
+---
+
+## 📁 Project Structure
 
 ```
-go run main.go
-
+/cloudconv
+|-- .dockerignore
+|-- .gitignore
+|-- docker-compose.yaml  # For easy Docker deployment
+|-- Dockerfile           # Defines the production Docker image
+|-- go.mod & go.sum      # Go module dependencies
+|-- main.go              # Main application logic
+|-- main_test.go         # Application tests
+|-- Makefile             # Helper commands for development
+|-- README.md
+|-- /templates
+|   |-- index.html       # Frontend single-page application
+|-- /uploads/            # Stores original uploaded files (temporary)
+|-- /converted/          # Stores converted files
+|-- /testdata/           # Test files
 ```
-
-You will see a message in your terminal indicating that the server has started:
-
-```
-Starting server on http://localhost:3000
-
-```
-
-Now, open your web browser and navigate to **http://localhost:3000**.
-
-🚀 How to Use
--------------
-
-1.  Click the "Choose File" button to select a video from your computer.
-
-2.  Select the desired output format from the dropdown menu (e.g., MP4, WebM, GIF).
-
-3.  Click the "Convert Video" button.
-
-4.  The page will reload. If the conversion is successful, a green success message will appear with a link to download your converted file. If it fails, a red error message will be shown.
-
-Converted files are saved in the `converted` directory, and original uploads are stored in the `uploads` directory within your project folder.

@@ -4,8 +4,8 @@ services:
     ports:
       - 3000:3000
     volumes:
-      - ./uploads:/app/uploads
-      - ./converted:/app/converted
+      - ./uploads:/app/uploads:rw
+      - ./converted:/app/converted:rw
     restart: always
     environment:
       - TZ=Europe/Berlin

@@ -30,9 +30,6 @@ FROM alpine:3.22
 # Install runtime dependencies - only ffmpeg is needed.
 RUN apk add --no-cache ffmpeg
 
-# Create a dedicated, non-root user and group for the application
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
 # Set the working directory
 WORKDIR /app
 
@@ -44,13 +41,6 @@ COPY templates ./templates
 
 # Create the directories for uploads and converted files
 RUN mkdir -p /app/uploads /app/converted
-
-# Change the ownership of the app directory to the new non-root user
-# This ensures our application can write to the uploads and converted directories.
-RUN chown -R appuser:appgroup /app
-
-# Switch to the non-root user
-USER appuser
 
 # Expose the port the application runs on
 EXPOSE 3000
