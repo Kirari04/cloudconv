@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale-1.0">
+    <title>Go Video Converter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .hidden { display: none; }
+        #progress-bar { transition: width 0.3s ease-in-out; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex items-center justify-center min-h-screen py-12">
+
+    <div class="w-full max-w-2xl mx-auto p-4">
+        <div class="bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl p-8 space-y-6">
+            
+            <div class="text-center">
+                <h1 class="text-4xl font-bold text-white">Go Video Converter</h1>
+                <p class="text-gray-400 mt-2">Upload a video file and see the conversion happen in real-time.</p>
+            </div>
+
+            <!-- Main UI Container -->
+            <div id="upload-container" class="space-y-6">
+                <div>
+                    <label for="videoFile" class="block mb-2 text-sm font-medium text-gray-300">1. Select Video File</label>
+                    <input type="file" name="videoFile" id="videoFile" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 cursor-pointer border border-gray-600 rounded-lg bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div>
+                    <label for="format" class="block mb-2 text-sm font-medium text-gray-300">2. Choose Target Format</label>
+                    <select name="format" id="format" required class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                        <option value="mp4">MP4</option>
+                        <option value="webm">WebM</option>
+                        <option value="mov">MOV</option>
+                        <option value="avi">AVI</option>
+                        <option value="mkv">MKV</option>
+                        <option value="gif">GIF</option>
+                    </select>
+                </div>
+
+                <!-- Conditional Options Sections -->
+                <div id="options-wrapper" class="space-y-6 pt-4 border-t border-gray-700">
+                    <!-- Generic Options -->
+                    <div id="generic-options" class="hidden space-y-4">
+                         <h3 class="text-lg font-semibold text-gray-200">Optional Settings</h3>
+                         <div>
+                            <label for="resolution" class="block mb-2 text-sm font-medium text-gray-300">Resolution (Height)</label>
+                            <select id="resolution" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="">Original</option>
+                                <option value="1080">1080p</option>
+                                <option value="720">720p</option>
+                                <option value="480">480p</option>
+                                <option value="360">360p</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="bitrate" class="block mb-2 text-sm font-medium text-gray-300">Video Bitrate (kbps)</label>
+                            <select id="bitrate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="">Automatic</option>
+                                <option value="5000">5000</option>
+                                <option value="2500">2500</option>
+                                <option value="1000">1000</option>
+                                <option value="500">500</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="audioBitrate" class="block mb-2 text-sm font-medium text-gray-300">Audio Bitrate (kbps)</label>
+                            <select id="audioBitrate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="">Automatic</option>
+                                <option value="320">320 (High Quality)</option>
+                                <option value="192">192 (Good Quality)</option>
+                                <option value="128">128 (Standard Quality)</option>
+                                <option value="64">64 (Low Quality)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="framerate" class="block mb-2 text-sm font-medium text-gray-300">Framerate (fps)</label>
+                            <select id="framerate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="">Original</option>
+                                <option value="60">60</option>
+                                <option value="30">30</option>
+                                <option value="24">24</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- GIF Options -->
+                    <div id="gif-options" class="hidden space-y-4">
+                         <h3 class="text-lg font-semibold text-gray-200">GIF Settings</h3>
+                        <div>
+                            <label for="gif-resolution" class="block mb-2 text-sm font-medium text-gray-300">Resolution (Width)</label>
+                            <select id="gif-resolution" required class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="480">480px</option>
+                                <option value="360" selected>360px</option>
+                                <option value="240">240px</option>
+                            </select>
+                        </div>
+                        <div class="flex items-center">
+                            <input id="gif-loop" type="checkbox" checked class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-600 ring-offset-gray-800 focus:ring-2">
+                            <label for="gif-loop" class="ml-2 text-sm font-medium text-gray-300">Loop indefinitely</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <button id="convertBtn" class="w-full text-white bg-blue-600 hover:bg-blue-700 focus:ring-4 focus:outline-none focus:ring-blue-800 font-medium rounded-lg text-sm px-5 py-3 text-center transition-colors disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        Upload & Convert
+                    </button>
+                </div>
+            </div>
+
+             <!-- Progress and Status Display -->
+            <div id="status-container" class="hidden space-y-4">
+                <div id="progress-wrapper" class="hidden">
+                    <div class="flex justify-between mb-1">
+                        <span id="progress-label" class="text-base font-medium text-gray-300">Uploading...</span>
+                        <span id="progress-text" class="text-sm font-medium text-gray-300">0%</span>
+                    </div>
+                    <div class="w-full bg-gray-700 rounded-full h-2.5">
+                        <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div id="message-box"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const formatSelect = document.getElementById('format');
+        const genericOptions = document.getElementById('generic-options');
+        const gifOptions = document.getElementById('gif-options');
+        
+        formatSelect.addEventListener('change', (e) => {
+            const format = e.target.value;
+            genericOptions.classList.add('hidden');
+            gifOptions.classList.add('hidden');
+            if (format === 'gif') {
+                gifOptions.classList.remove('hidden');
+            } else {
+                genericOptions.classList.remove('hidden');
+            }
+        });
+        
+        const convertBtn = document.getElementById('convertBtn');
+        const videoFileInput = document.getElementById('videoFile');
+        const uploadContainer = document.getElementById('upload-container');
+        const statusContainer = document.getElementById('status-container');
+        const progressWrapper = document.getElementById('progress-wrapper');
+        const progressBar = document.getElementById('progress-bar');
+        const progressText = document.getElementById('progress-text');
+        const progressLabel = document.getElementById('progress-label');
+        const messageBox = document.getElementById('message-box');
+        
+        const resolutionSelect = document.getElementById('resolution');
+        const bitrateSelect = document.getElementById('bitrate');
+        const framerateSelect = document.getElementById('framerate');
+        const audioBitrateSelect = document.getElementById('audioBitrate');
+        const gifResolutionSelect = document.getElementById('gif-resolution');
+        const gifLoopCheckbox = document.getElementById('gif-loop');
+
+        let pollingInterval;
+
+        convertBtn.addEventListener('click', async () => {
+            const file = videoFileInput.files[0];
+            const format = formatSelect.value;
+
+            if (!file) {
+                displayError("Please select a file first.", false);
+                return;
+            }
+
+            convertBtn.disabled = true;
+            uploadContainer.classList.add('hidden');
+            statusContainer.classList.remove('hidden');
+
+            try {
+                const initResponse = await fetch('/api/uploads/initiate', { method: 'POST' });
+                if (!initResponse.ok) throw new Error('Failed to start upload session.');
+                
+                const { uploadId } = await initResponse.json();
+                await uploadFile(uploadId, file, format);
+                startPolling(uploadId);
+            } catch (error) {
+                console.error('Error during conversion process:', error);
+                displayError(error.message);
+                if (pollingInterval) clearInterval(pollingInterval);
+            }
+        });
+
+        function uploadFile(uploadId, file, format) {
+            return new Promise((resolve, reject) => {
+                const formData = new FormData();
+                formData.append('videoFile', file);
+                formData.append('format', format);
+                
+                if (format === 'gif') {
+                    formData.append('resolution', gifResolutionSelect.value);
+                    formData.append('gifLoop', gifLoopCheckbox.checked);
+                } else {
+                    formData.append('resolution', resolutionSelect.value);
+                    formData.append('bitrate', bitrateSelect.value);
+                    formData.append('framerate', framerateSelect.value);
+                    formData.append('audioBitrate', audioBitrateSelect.value);
+                }
+
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', `/api/uploads/${uploadId}`, true);
+
+                progressWrapper.classList.remove('hidden');
+                progressLabel.textContent = 'Uploading...';
+                
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                        const percentComplete = Math.round((event.loaded / event.total) * 100);
+                        progressBar.style.width = percentComplete + '%';
+                        progressText.textContent = percentComplete + '%';
+                    }
+                };
+
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        progressLabel.textContent = 'Processing file...';
+                        progressBar.style.width = '0%';
+                        progressText.textContent = '0%';
+                        resolve(xhr.response);
+                    } else {
+                        reject(new Error(xhr.responseText || `Upload failed with status: ${xhr.status}`));
+                    }
+                };
+                
+                xhr.onerror = () => reject(new Error('Network error during upload.'));
+                xhr.onabort = () => reject(new Error('Upload aborted.'));
+
+                xhr.send(formData);
+            });
+        }
+
+        function startPolling(uploadId) {
+            pollingInterval = setInterval(async () => {
+                try {
+                    const statusResponse = await fetch(`/api/uploads/${uploadId}/status`);
+                    if (!statusResponse.ok) throw new Error('Could not fetch status.');
+                    
+                    const data = await statusResponse.json();
+
+                    if (data.status === 'queued') {
+                        progressLabel.textContent = `Queued... (Position: ${data.queuePosition})`;
+                        progressBar.style.width = '0%';
+                        progressText.textContent = 'Waiting';
+                    } else if (data.status === 'converting') {
+                        progressLabel.textContent = 'Converting...';
+                        const percent = data.progressPercentage || 0;
+                        progressBar.style.width = percent + '%';
+                        progressText.textContent = percent + '%';
+                    } else if (data.status === 'finished') {
+                        clearInterval(pollingInterval);
+                        progressLabel.textContent = 'Complete!';
+                        progressBar.style.width = '100%';
+                        progressText.textContent = '100%';
+                        setTimeout(() => displaySuccess(data.downloadUrl), 500);
+                    } else if (data.status === 'error') {
+                        clearInterval(pollingInterval);
+                        displayError(data.error);
+                    }
+                } catch (error) {
+                    clearInterval(pollingInterval);
+                    console.error('Polling error:', error);
+                    displayError('Lost connection to the server.');
+                }
+            }, 1000);
+        }
+
+        function displaySuccess(downloadUrl) {
+            progressWrapper.classList.add('hidden');
+            const isGif = downloadUrl.toLowerCase().endsWith('.gif');
+            const previewHtml = isGif ? `
+                <div class="mt-4 border border-gray-600 rounded-lg p-2 bg-gray-900/50">
+                    <img src="${downloadUrl}" alt="GIF Preview" class="mx-auto rounded-md max-h-64">
+                </div>` : '';
+
+            messageBox.innerHTML = `
+                <div class="bg-green-500/20 border border-green-500 text-green-300 px-4 py-3 rounded-lg relative" role="alert">
+                    <strong class="font-bold">Success!</strong>
+                    <span class="block sm:inline">Video converted successfully.</span>
+                    ${previewHtml}
+                    <div class="mt-4">
+                         <a href="${downloadUrl}" download class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg inline-flex items-center transition-colors">
+                            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                            <span>Download Converted File</span>
+                        </a>
+                        <button onclick="window.location.reload()" class="ml-4 bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Convert Another</button>
+                    </div>
+                </div>`;
+        }
+
+        function displayError(message, showTryAgain = true) {
+            progressWrapper.classList.add('hidden');
+            const tryAgainButton = showTryAgain ? `<button onclick="window.location.reload()" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Try Again</button>` : '';
+            messageBox.innerHTML = `
+                <div class="bg-red-500/20 border border-red-500 text-red-300 px-4 py-3 rounded-lg relative" role="alert">
+                    <strong class="font-bold">Error!</strong>
+                    <span class="block sm:inline">${message || 'An unknown error occurred.'}</span>
+                    <div class="mt-4">
+                        ${tryAgainButton}
+                    </div>
+                </div>`;
+        }
+        
+        formatSelect.dispatchEvent(new Event('change'));
+    </script>
+</body>
+</html>
+
