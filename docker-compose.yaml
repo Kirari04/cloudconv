@@ -3,9 +3,9 @@ services:
     image: kirari04/cloudconv:latest
     ports:
       - 3000:3000
-    volumes:
-      - ./uploads:/app/uploads:rw
-      - ./converted:/app/converted:rw
+    # volumes:
+      # - ./uploads:/app/uploads:rw
+      # - ./converted:/app/converted:rw
     restart: always
     environment:
       - TZ=Europe/Berlin

@@ -65,6 +65,7 @@ func main() {
 
 	r := chi.NewRouter()
 	r.Get("/", serveIndex)
+	r.Get("/audio", serveAudioPage)
 	r.Post("/api/uploads/initiate", initiateUploadHandler)
 	r.Post("/api/uploads/{uploadId}", fileUploadHandler)
 	r.Get("/api/uploads/{uploadId}/status", statusHandler)
@@ -92,6 +93,11 @@ func setupDirectories() {
 // serveIndex serves the main HTML page.
 func serveIndex(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "templates/index.html")
+}
+
+// serveAudioPage serves the audio conversion HTML page.
+func serveAudioPage(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "templates/audio.html")
 }
 
 // initiateUploadHandler creates a new job entry.
@@ -148,7 +154,7 @@ func validateAndParseOptions(r *http.Request) (*ConversionOptions, error) {
 	if opts.Format == "" {
 		return nil, fmt.Errorf("target format must be specified")
 	}
-	validFormats := []string{"mp4", "webm", "mov", "avi", "mkv", "gif"}
+	validFormats := []string{"mp4", "webm", "mov", "avi", "mkv", "gif", "mp3", "wav", "ogg", "flac"}
 	isValidFormat := false
 	for _, f := range validFormats {
 		if f == opts.Format {
@@ -256,8 +262,11 @@ func fileUploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	file, header, err := r.FormFile("videoFile")
 	if err != nil {
-		http.Error(w, "Could not retrieve file.", http.StatusBadRequest)
-		return
+		file, header, err = r.FormFile("audioFile")
+		if err != nil {
+			http.Error(w, "Could not retrieve file.", http.StatusBadRequest)
+			return
+		}
 	}
 	defer file.Close()
 
@@ -343,7 +352,7 @@ func worker() {
 		jobQueueMutex.Unlock()
 
 		if jobID != "" {
-			convertVideo(jobID)
+			convertFile(jobID)
 		}
 
 		time.Sleep(1 * time.Second)
@@ -375,7 +384,7 @@ func buildFFmpegCommand(job *ConversionJob, opts *ConversionOptions, inputPath, 
 		filter := fmt.Sprintf("fps=%s,scale=%s:-2:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", fps, scale)
 		args = append(args, "-vf", filter)
 
-	} else {
+	} else if isVideo(opts.Format) {
 		// --- Codec Selection ---
 		switch opts.Format {
 		case "mp4", "mov", "mkv":
@@ -417,14 +426,29 @@ func buildFFmpegCommand(job *ConversionJob, opts *ConversionOptions, inputPath, 
 		if opts.AudioBitrate != 0 {
 			args = append(args, "-b:a", fmt.Sprintf("%dk", opts.AudioBitrate))
 		}
+	} else { // Audio arguments
+		switch opts.Format {
+		case "mp3":
+			args = append(args, "-c:a", "libmp3lame")
+		case "wav":
+			args = append(args, "-c:a", "pcm_s16le")
+		case "ogg":
+			args = append(args, "-c:a", "libvorbis")
+		case "flac":
+			args = append(args, "-c:a", "flac")
+		}
+		args = append(args, "-af", "aformat=channel_layouts='7.1|5.1|stereo'")
+		if opts.AudioBitrate != 0 {
+			args = append(args, "-b:a", fmt.Sprintf("%dk", opts.AudioBitrate))
+		}
 	}
 
 	args = append(args, "-y", outputPath)
 	return exec.Command("ffmpeg", args...)
 }
 
-// convertVideo runs the FFmpeg process for a given job.
-func convertVideo(jobID string) {
+// convertFile runs the FFmpeg process for a given job.
+func convertFile(jobID string) {
 	jobStoreMutex.Lock()
 	job, exists := jobStore[jobID]
 	if !exists || job.Options == nil { // Added nil check for safety
@@ -445,7 +469,7 @@ func convertVideo(jobID string) {
 	socketPath := filepath.Join(os.TempDir(), jobID+".sock")
 	os.Remove(socketPath) // Clean up any old socket file
 
-	totalDuration, err := getVideoDuration(inputPath)
+	totalDuration, err := getFileDuration(inputPath)
 	if err != nil {
 		log.Printf("Failed to get duration for job %s: %v", jobID, err)
 		// We can still proceed, progress will just not be a percentage.
@@ -486,8 +510,8 @@ func convertVideo(jobID string) {
 	}
 }
 
-// getVideoDuration uses ffprobe to get the video duration in seconds.
-func getVideoDuration(filePath string) (float64, error) {
+// getFileDuration uses ffprobe to get the video duration in seconds.
+func getFileDuration(filePath string) (float64, error) {
 	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath)
 	output, err := cmd.Output()
 	if err != nil {
@@ -560,5 +584,14 @@ func cleanupWorker() {
 			}
 		}
 		jobStoreMutex.Unlock()
+	}
+}
+
+func isVideo(format string) bool {
+	switch format {
+	case "mp4", "webm", "mov", "avi", "mkv", "gif":
+		return true
+	default:
+		return false
 	}
 }

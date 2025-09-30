@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale-1.0">
-    <title>Go Video Converter</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go Audio Converter</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -20,61 +20,37 @@
         <div class="bg-gray-800 border border-gray-700 rounded-2xl shadow-2xl p-8 space-y-6">
             
             <div class="text-center">
-                <h1 class="text-4xl font-bold text-white">Go Video Converter</h1>
-                <p class="text-gray-400 mt-2">Upload a video file and see the conversion happen in real-time.</p>
+                <h1 class="text-4xl font-bold text-white">Go Audio Converter</h1>
+                <p class="text-gray-400 mt-2">Upload an audio file and convert it to a different format.</p>
             </div>
-
+            
             <div class="flex justify-center">
                 <nav class="flex space-x-4">
-                    <a href="/" class="text-white font-bold">Video Conversion</a>
-                    <a href="/audio" class="text-gray-300 hover:text-white">Audio Conversion</a>
+                    <a href="/" class="text-gray-300 hover:text-white">Video Conversion</a>
+                    <a href="/audio" class="text-white font-bold">Audio Conversion</a>
                 </nav>
             </div>
 
             <!-- Main UI Container -->
             <div id="upload-container" class="space-y-6">
                 <div>
-                    <label for="videoFile" class="block mb-2 text-sm font-medium text-gray-300">1. Select Video File</label>
-                    <input type="file" name="videoFile" id="videoFile" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 cursor-pointer border border-gray-600 rounded-lg bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <label for="audioFile" class="block mb-2 text-sm font-medium text-gray-300">1. Select Audio File</label>
+                    <input type="file" name="audioFile" id="audioFile" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 cursor-pointer border border-gray-600 rounded-lg bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
 
                 <div>
                     <label for="format" class="block mb-2 text-sm font-medium text-gray-300">2. Choose Target Format</label>
                     <select name="format" id="format" required class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                        <option value="mp4">MP4</option>
-                        <option value="webm">WebM</option>
-                        <option value="mov">MOV</option>
-                        <option value="avi">AVI</option>
-                        <option value="mkv">MKV</option>
-                        <option value="gif">GIF</option>
+                        <option value="mp3">MP3</option>
+                        <option value="wav">WAV</option>
+                        <option value="ogg">OGG</option>
+                        <option value="flac">FLAC</option>
                     </select>
                 </div>
 
-                <!-- Conditional Options Sections -->
                 <div id="options-wrapper" class="space-y-6 pt-4 border-t border-gray-700">
-                    <!-- Generic Options -->
-                    <div id="generic-options" class="hidden space-y-4">
+                    <div id="generic-options" class="space-y-4">
                          <h3 class="text-lg font-semibold text-gray-200">Optional Settings</h3>
-                         <div>
-                            <label for="resolution" class="block mb-2 text-sm font-medium text-gray-300">Resolution (Height)</label>
-                            <select id="resolution" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                                <option value="">Original</option>
-                                <option value="1080">1080p</option>
-                                <option value="720">720p</option>
-                                <option value="480">480p</option>
-                                <option value="360">360p</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label for="bitrate" class="block mb-2 text-sm font-medium text-gray-300">Video Bitrate (kbps)</label>
-                            <select id="bitrate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                                <option value="">Automatic</option>
-                                <option value="5000">5000</option>
-                                <option value="2500">2500</option>
-                                <option value="1000">1000</option>
-                                <option value="500">500</option>
-                            </select>
-                        </div>
                         <div>
                             <label for="audioBitrate" class="block mb-2 text-sm font-medium text-gray-300">Audio Bitrate (kbps)</label>
                             <select id="audioBitrate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
@@ -84,32 +60,6 @@
                                 <option value="128">128 (Standard Quality)</option>
                                 <option value="64">64 (Low Quality)</option>
                             </select>
-                        </div>
-                        <div>
-                            <label for="framerate" class="block mb-2 text-sm font-medium text-gray-300">Framerate (fps)</label>
-                            <select id="framerate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                                <option value="">Original</option>
-                                <option value="60">60</option>
-                                <option value="30">30</option>
-                                <option value="24">24</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <!-- GIF Options -->
-                    <div id="gif-options" class="hidden space-y-4">
-                         <h3 class="text-lg font-semibold text-gray-200">GIF Settings</h3>
-                        <div>
-                            <label for="gif-resolution" class="block mb-2 text-sm font-medium text-gray-300">Resolution (Width)</label>
-                            <select id="gif-resolution" required class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                                <option value="480">480px</option>
-                                <option value="360" selected>360px</option>
-                                <option value="240">240px</option>
-                            </select>
-                        </div>
-                        <div class="flex items-center">
-                            <input id="gif-loop" type="checkbox" checked class="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-600 ring-offset-gray-800 focus:ring-2">
-                            <label for="gif-loop" class="ml-2 text-sm font-medium text-gray-300">Loop indefinitely</label>
                         </div>
                     </div>
                 </div>
@@ -138,23 +88,10 @@
     </div>
 
     <script>
-        const formatSelect = document.getElementById('format');
-        const genericOptions = document.getElementById('generic-options');
-        const gifOptions = document.getElementById('gif-options');
-        
-        formatSelect.addEventListener('change', (e) => {
-            const format = e.target.value;
-            genericOptions.classList.add('hidden');
-            gifOptions.classList.add('hidden');
-            if (format === 'gif') {
-                gifOptions.classList.remove('hidden');
-            } else {
-                genericOptions.classList.remove('hidden');
-            }
-        });
-        
         const convertBtn = document.getElementById('convertBtn');
-        const videoFileInput = document.getElementById('videoFile');
+        const audioFileInput = document.getElementById('audioFile');
+        const formatSelect = document.getElementById('format');
+        const audioBitrateSelect = document.getElementById('audioBitrate');
         const uploadContainer = document.getElementById('upload-container');
         const statusContainer = document.getElementById('status-container');
         const progressWrapper = document.getElementById('progress-wrapper');
@@ -162,18 +99,11 @@
         const progressText = document.getElementById('progress-text');
         const progressLabel = document.getElementById('progress-label');
         const messageBox = document.getElementById('message-box');
-        
-        const resolutionSelect = document.getElementById('resolution');
-        const bitrateSelect = document.getElementById('bitrate');
-        const framerateSelect = document.getElementById('framerate');
-        const audioBitrateSelect = document.getElementById('audioBitrate');
-        const gifResolutionSelect = document.getElementById('gif-resolution');
-        const gifLoopCheckbox = document.getElementById('gif-loop');
 
         let pollingInterval;
 
         convertBtn.addEventListener('click', async () => {
-            const file = videoFileInput.files[0];
+            const file = audioFileInput.files[0];
             const format = formatSelect.value;
 
             if (!file) {
@@ -202,18 +132,9 @@
         function uploadFile(uploadId, file, format) {
             return new Promise((resolve, reject) => {
                 const formData = new FormData();
-                formData.append('videoFile', file);
+                formData.append('audioFile', file);
                 formData.append('format', format);
-                
-                if (format === 'gif') {
-                    formData.append('resolution', gifResolutionSelect.value);
-                    formData.append('gifLoop', gifLoopCheckbox.checked);
-                } else {
-                    formData.append('resolution', resolutionSelect.value);
-                    formData.append('bitrate', bitrateSelect.value);
-                    formData.append('framerate', framerateSelect.value);
-                    formData.append('audioBitrate', audioBitrateSelect.value);
-                }
+                formData.append('audioBitrate', audioBitrateSelect.value);
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `/api/uploads/${uploadId}`, true);
@@ -284,17 +205,10 @@
 
         function displaySuccess(downloadUrl) {
             progressWrapper.classList.add('hidden');
-            const isGif = downloadUrl.toLowerCase().endsWith('.gif');
-            const previewHtml = isGif ? `
-                <div class="mt-4 border border-gray-600 rounded-lg p-2 bg-gray-900/50">
-                    <img src="${downloadUrl}" alt="GIF Preview" class="mx-auto rounded-md max-h-64">
-                </div>` : '';
-
             messageBox.innerHTML = `
                 <div class="bg-green-500/20 border border-green-500 text-green-300 px-4 py-3 rounded-lg relative" role="alert">
                     <strong class="font-bold">Success!</strong>
-                    <span class="block sm:inline">Video converted successfully.</span>
-                    ${previewHtml}
+                    <span class="block sm:inline">Audio converted successfully.</span>
                     <div class="mt-4">
                          <a href="${downloadUrl}" download class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg inline-flex items-center transition-colors">
                             <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
@@ -317,9 +231,6 @@
                     </div>
                 </div>`;
         }
-        
-        formatSelect.dispatchEvent(new Event('change'));
     </script>
 </body>
 </html>
-
