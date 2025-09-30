@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -282,18 +283,44 @@ func fileUploadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	file, header, err := r.FormFile("videoFile")
-	if err != nil {
-		file, header, err = r.FormFile("audioFile")
-		if err != nil {
-			file, header, err = r.FormFile("imageFile")
-			if err != nil {
+	var file multipart.File
+	var header *multipart.FileHeader
+	uploadType := ""
+
+	file, header, err = r.FormFile("imageFile")
+	if err == nil {
+		uploadType = "image"
+	} else {
+		file, header, err = r.FormFile("videoFile")
+		if err == nil {
+			uploadType = "video"
+		} else {
+			file, header, err = r.FormFile("audioFile")
+			if err == nil {
+				uploadType = "audio"
+			} else {
 				http.Error(w, "Could not retrieve file. Expected 'videoFile', 'audioFile', or 'imageFile'.", http.StatusBadRequest)
 				return
 			}
 		}
 	}
 	defer file.Close()
+
+	if uploadType == "image" {
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(header.Filename), "."))
+		allowedImageInputs := map[string]bool{
+			"jpg": true, "jpeg": true, "png": true, "webp": true, "bmp": true, "tiff": true, "gif": true,
+		}
+		if !allowedImageInputs[ext] {
+			errMsg := "Invalid input file type for image conversion. Please upload a valid image file (jpg, png, webp, bmp, tiff, gif)."
+			jobStoreMutex.Lock()
+			job.Status = "error"
+			job.ErrorMessage = errMsg
+			jobStoreMutex.Unlock()
+			http.Error(w, errMsg, http.StatusBadRequest)
+			return
+		}
+	}
 
 	ext := filepath.Ext(header.Filename)
 	safeFilename := uploadId + ext
@@ -452,6 +479,8 @@ func buildFFmpegCommand(job *ConversionJob, opts *ConversionOptions, inputPath, 
 			args = append(args, "-b:a", fmt.Sprintf("%dk", opts.AudioBitrate))
 		}
 	} else if isImage(opts.Format) {
+		isInputAnimated := strings.HasSuffix(strings.ToLower(job.OriginalFilename), ".gif")
+
 		var vfArgs []string
 		if opts.Resolution != 0 {
 			// Scale by width, preserving aspect ratio
@@ -459,6 +488,10 @@ func buildFFmpegCommand(job *ConversionJob, opts *ConversionOptions, inputPath, 
 		}
 		if len(vfArgs) > 0 {
 			args = append(args, "-vf", strings.Join(vfArgs, ","))
+		}
+		// If input is animated (like a GIF) and output is a static image, take only the first frame.
+		if isInputAnimated {
+			args = append(args, "-frames:v", "1")
 		}
 	} else { // Audio arguments
 		switch opts.Format {
@@ -526,7 +559,7 @@ func convertFile(jobID string) {
 	log.Printf("[Job %s] Executing FFmpeg Command: %s", jobID, strings.Join(cmd.Args, " "))
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		errMsg := fmt.Sprintf("exit status %v", err)
+		errMsg := fmt.Sprintf("conversion failed: %v", err)
 		log.Printf("FFmpeg failed for job %s: %s\nOutput: %s", jobID, errMsg, string(output))
 		updateJobError(jobID, errMsg)
 	} else {
@@ -551,7 +584,11 @@ func getFileDuration(filePath string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
+	durationStr := strings.TrimSpace(string(output))
+	if durationStr == "N/A" {
+		return 0, fmt.Errorf("duration not available")
+	}
+	return strconv.ParseFloat(durationStr, 64)
 }
 
 // monitorProgress reads from the socket and updates the job's progress.
@@ -581,6 +618,14 @@ func monitorProgress(listener net.Listener, jobID string, totalDuration float64)
 					jobStoreMutex.Unlock()
 				}
 			}
+		}
+		if len(parts) == 2 && parts[0] == "progress" && parts[1] == "end" {
+			// For very fast conversions like images, ensure progress hits 100.
+			jobStoreMutex.Lock()
+			if job, exists := jobStore[jobID]; exists && job.Status == "converting" {
+				job.ProgressPercentage = 100
+			}
+			jobStoreMutex.Unlock()
 		}
 	}
 }
