@@ -47,7 +47,7 @@ func setupTestServer() *httptest.Server {
 }
 
 // createUploadRequest is a helper to build the multipart/form-data request for file uploads.
-func createUploadRequest(url, filePath string, options map[string]string, includeFile bool) (*http.Request, error) {
+func createUploadRequest(url, filePath, formFieldName string, options map[string]string, includeFile bool) (*http.Request, error) {
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
 
@@ -58,7 +58,7 @@ func createUploadRequest(url, filePath string, options map[string]string, includ
 		}
 		defer file.Close()
 
-		part, err := writer.CreateFormFile("videoFile", filepath.Base(filePath))
+		part, err := writer.CreateFormFile(formFieldName, filepath.Base(filePath))
 		if err != nil {
 			return nil, err
 		}
@@ -122,8 +122,8 @@ func TestConversionFunctionality(t *testing.T) {
 	server := setupTestServer()
 	defer server.Close()
 
-	// List of files for successful conversion matrix
-	successfulTestFiles := []string{
+	// --- Lists of files for testing ---
+	successfulVideoTestFiles := []string{
 		"testdata/test5.avi",
 		"testdata/test5.gif",
 		"testdata/test5.mkv",
@@ -131,13 +131,20 @@ func TestConversionFunctionality(t *testing.T) {
 		"testdata/test5.mp4",
 		"testdata/test5.webm",
 	}
+	successfulAudioTestFiles := []string{
+		"testdata/test5.mp3",
+		"testdata/test5.wav",
+		"testdata/test5.ogg",
+		"testdata/test5.flac",
+	}
 	// A single file for invalid input tests
 	const invalidTestFile = "testdata/test5.mkv"
 
-	// Check that all required files exist
-	for _, file := range successfulTestFiles {
+	// --- Check that all required files exist ---
+	allFiles := append(successfulVideoTestFiles, successfulAudioTestFiles...)
+	for _, file := range allFiles {
 		if _, err := os.Stat(file); os.IsNotExist(err) {
-			t.Fatalf("Test video file not found: %s. Please ensure all test files are in the 'testdata' directory.", file)
+			t.Fatalf("Test media file not found: %s. Please ensure all test files are in the 'testdata' directory.", file)
 		}
 	}
 
@@ -145,7 +152,7 @@ func TestConversionFunctionality(t *testing.T) {
 	jobStore = make(map[string]*ConversionJob)
 	jobQueue = []string{}
 
-	t.Run("Successful Conversions", func(t *testing.T) {
+	t.Run("Successful Video Conversions", func(t *testing.T) {
 		testCases := []struct {
 			name           string
 			options        map[string]string
@@ -193,7 +200,7 @@ func TestConversionFunctionality(t *testing.T) {
 			},
 		}
 
-		for _, inputFile := range successfulTestFiles {
+		for _, inputFile := range successfulVideoTestFiles {
 			for _, tc := range testCases {
 				// Create a unique name for the subtest to avoid collisions
 				inputFileName := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
@@ -221,7 +228,7 @@ func TestConversionFunctionality(t *testing.T) {
 
 					// 2. Upload file
 					uploadURL := server.URL + "/api/uploads/" + jobID
-					req, err := createUploadRequest(uploadURL, inputFile, tc.options, true)
+					req, err := createUploadRequest(uploadURL, inputFile, "videoFile", tc.options, true)
 					if err != nil {
 						t.Fatalf("Failed to create upload request: %v", err)
 					}
@@ -250,6 +257,102 @@ func TestConversionFunctionality(t *testing.T) {
 					}
 
 					// 4. Verify converted file exists
+					convertedFileName := jobID + tc.expectedSuffix
+					convertedFilePath := filepath.Join(convertedDir, convertedFileName)
+					if _, err := os.Stat(convertedFilePath); os.IsNotExist(err) {
+						t.Errorf("Converted file was not found at %s", convertedFilePath)
+					} else {
+						os.Remove(convertedFilePath)
+					}
+				})
+			}
+		}
+	})
+
+	t.Run("Successful Audio Conversions", func(t *testing.T) {
+		testCases := []struct {
+			name           string
+			options        map[string]string
+			expectedSuffix string
+		}{
+			{
+				name:           "MP3 Conversion - Default",
+				options:        map[string]string{"format": "mp3"},
+				expectedSuffix: ".mp3",
+			},
+			{
+				name:           "MP3 Conversion - With Bitrate",
+				options:        map[string]string{"format": "mp3", "audioBitrate": "192"},
+				expectedSuffix: ".mp3",
+			},
+			{
+				name:           "WAV Conversion",
+				options:        map[string]string{"format": "wav"},
+				expectedSuffix: ".wav",
+			},
+			{
+				name:           "OGG Conversion",
+				options:        map[string]string{"format": "ogg", "audioBitrate": "96"},
+				expectedSuffix: ".ogg",
+			},
+			{
+				name:           "FLAC Conversion",
+				options:        map[string]string{"format": "flac"},
+				expectedSuffix: ".flac",
+			},
+		}
+
+		for _, inputFile := range successfulAudioTestFiles {
+			for _, tc := range testCases {
+				// Create a unique name for the subtest
+				inputFileName := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
+				testName := fmt.Sprintf("From_%s_to_%s", inputFileName, tc.name)
+
+				t.Run(testName, func(t *testing.T) {
+					// 1. Initiate upload
+					resp, err := http.Post(server.URL+"/api/uploads/initiate", "application/json", nil)
+					if err != nil {
+						t.Fatalf("Failed to initiate upload: %v", err)
+					}
+					if resp.StatusCode != http.StatusCreated {
+						t.Fatalf("Expected status 201 Created, got %d", resp.StatusCode)
+					}
+					var initResponse map[string]string
+					json.NewDecoder(resp.Body).Decode(&initResponse)
+					jobID := initResponse["uploadId"]
+					resp.Body.Close()
+
+					// 2. Upload audio file
+					uploadURL := server.URL + "/api/uploads/" + jobID
+					req, err := createUploadRequest(uploadURL, inputFile, "audioFile", tc.options, true)
+					if err != nil {
+						t.Fatalf("Failed to create upload request: %v", err)
+					}
+
+					uploadResp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatalf("Failed to perform upload request: %v", err)
+					}
+					if uploadResp.StatusCode != http.StatusOK {
+						bodyBytes, _ := io.ReadAll(uploadResp.Body)
+						t.Fatalf("Expected status 200 OK on upload, got %d. Body: %s", uploadResp.StatusCode, string(bodyBytes))
+					}
+					uploadResp.Body.Close()
+
+					// 3. Poll for status until finished
+					finalJob := pollUntilFinished(t, server.URL, jobID)
+
+					if finalJob.Status != "finished" {
+						t.Fatalf("Expected job status 'finished', got '%s' with error: %s", finalJob.Status, finalJob.ErrorMessage)
+					}
+					if finalJob.ProgressPercentage != 100 {
+						t.Errorf("Expected progress to be 100, got %d", finalJob.ProgressPercentage)
+					}
+					if !strings.HasSuffix(finalJob.DownloadURL, tc.expectedSuffix) {
+						t.Errorf("Expected download URL to end with %s, got %s", tc.expectedSuffix, finalJob.DownloadURL)
+					}
+
+					// 4. Verify converted file exists and clean up
 					convertedFileName := jobID + tc.expectedSuffix
 					convertedFilePath := filepath.Join(convertedDir, convertedFileName)
 					if _, err := os.Stat(convertedFilePath); os.IsNotExist(err) {
@@ -345,7 +448,8 @@ func TestConversionFunctionality(t *testing.T) {
 
 				// 2. Upload file with invalid options
 				uploadURL := server.URL + "/api/uploads/" + jobID
-				req, err := createUploadRequest(uploadURL, invalidTestFile, tc.options, tc.includeFile)
+				// Using "videoFile" as the form field name for these generic validation tests
+				req, err := createUploadRequest(uploadURL, invalidTestFile, "videoFile", tc.options, tc.includeFile)
 				if err != nil {
 					t.Fatalf("Failed to create upload request: %v", err)
 				}
