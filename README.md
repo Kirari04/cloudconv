@@ -3,7 +3,7 @@ CloudConv - Web-Based Media Converter
 
 ======================================
 
-CloudConv is a powerful, self-hostable web-based media converter built with Go and FFmpeg. It provides a clean, modern interface to upload video and audio files and convert them to various formats in real-time, with a robust backend that includes a job queue, progress tracking, and automatic cleanup.
+CloudConv is a powerful, self-hostable web-based media converter built with Go and FFmpeg. It provides a clean, modern interface to upload video, audio, and image files and convert them to various formats in real-time, with a robust backend that includes a job queue, progress tracking, and automatic cleanup.
 
 The application is fully containerized, making setup incredibly simple.
 
@@ -12,13 +12,16 @@ The application is fully containerized, making setup incredibly simple.
 ✨ Features
 ----------
 
--   **Modern Web UI**: A sleek, responsive interface built with Tailwind CSS for both video and audio conversion.
+-   **Modern Web UI**: A sleek, responsive interface built with Tailwind CSS for video, audio, and image conversion.
 
 -   **Real-Time Progress**: Watch the upload and conversion progress live.
 
 -   **Job Queueing**: Handles multiple conversions sequentially.
 
--   **Extensive Format Support**: Convert videos (MP4, WebM, MOV, AVI, MKV, GIF) and audio (MP3, WAV, OGG, FLAC).
+-   **Extensive Format Support**: 
+    - **Video**: MP4, WebM, MOV, AVI, MKV, GIF
+    - **Audio**: MP3, WAV, OGG, FLAC
+    - **Image**: JPG, PNG, WebP, BMP, TIFF
 
 -   **Customizable Outputs**: Control resolution, video/audio bitrates, framerate, and GIF loop settings.
 
@@ -75,7 +78,10 @@ The easiest and recommended way to run CloudConv is by using Docker. This method
 
 4.  **Access CloudConv:**
 
-    Open your web browser and navigate to **http://localhost:3000** for video conversion or **http://localhost:3000/audio** for audio conversion.
+    Open your web browser and navigate to one of the following pages:
+    - **Video Conversion**: `http://localhost:3000`
+    - **Audio Conversion**: `http://localhost:3000/audio`
+    - **Image Conversion**: `http://localhost:3000/image`
 
 🔧 Manual Setup (For Development)
 ---------------------------------
@@ -117,13 +123,16 @@ You can verify they are installed by running `go version` and `ffmpeg -version`.
 ⚙️ How to Use
 -------------
 
-1.  Navigate to `http://localhost:3000` for video conversion or `http://localhost:3000/audio` for audio conversion.
+1.  Navigate to the appropriate page for your conversion type:
+    - `http://localhost:3000` for video
+    - `http://localhost:3000/audio` for audio
+    - `http://localhost:3000/image` for images
 
-2.  Click **"Select Video File"** or **"Select Audio File"** to choose a file from your computer.
+2.  Click the **"Select File"** button to choose a file from your computer.
 
 3.  Select the desired **Target Format** from the dropdown menu.
 
-4.  (Optional) Adjust settings like resolution (for video), audio bitrate, or GIF options.
+4.  (Optional) Adjust settings like resolution (for video/images), audio bitrate, or GIF options.
 
 5.  Click **"Upload & Convert"**.
 
@@ -148,6 +157,7 @@ You can verify they are installed by running `go version` and `ffmpeg -version`.
 |-- /templates
 |   |-- index.html       # Frontend for video conversion
 |   |-- audio.html       # Frontend for audio conversion
+|   |-- image.html       # Frontend for image conversion
 |-- /uploads/            # Stores original uploaded files (temporary)
 |-- /converted/          # Stores converted files
 |-- /testdata/           # Test files
