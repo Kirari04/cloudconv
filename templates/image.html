@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Go Audio Converter</title>
+    <title>Go Image Converter</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -27,25 +27,26 @@
             <div class="flex justify-center">
                  <nav class="flex space-x-4 rounded-lg bg-gray-900 p-2">
                     <a href="/" class="text-gray-300 hover:text-white rounded-md py-2 px-4 font-medium text-sm">Video</a>
-                    <a href="/audio" class="text-white bg-gray-700 rounded-md py-2 px-4 font-bold text-sm">Audio</a>
-                    <a href="/image" class="text-gray-300 hover:text-white rounded-md py-2 px-4 font-medium text-sm">Image</a>
+                    <a href="/audio" class="text-gray-300 hover:text-white rounded-md py-2 px-4 font-medium text-sm">Audio</a>
+                    <a href="/image" class="text-white bg-gray-700 rounded-md py-2 px-4 font-bold text-sm">Image</a>
                 </nav>
             </div>
 
             <!-- Main UI Container -->
             <div id="upload-container" class="space-y-6">
                 <div>
-                    <label for="audioFile" class="block mb-2 text-sm font-medium text-gray-300">1. Select Audio File</label>
-                    <input type="file" name="audioFile" id="audioFile" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 cursor-pointer border border-gray-600 rounded-lg bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <label for="imageFile" class="block mb-2 text-sm font-medium text-gray-300">1. Select Image File</label>
+                    <input type="file" name="imageFile" id="imageFile" accept="image/*" required class="block w-full text-sm text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 cursor-pointer border border-gray-600 rounded-lg bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500">
                 </div>
 
                 <div>
                     <label for="format" class="block mb-2 text-sm font-medium text-gray-300">2. Choose Target Format</label>
                     <select name="format" id="format" required class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                        <option value="mp3">MP3</option>
-                        <option value="wav">WAV</option>
-                        <option value="ogg">OGG</option>
-                        <option value="flac">FLAC</option>
+                        <option value="png">PNG</option>
+                        <option value="jpg">JPG</option>
+                        <option value="webp">WEBP</option>
+                        <option value="bmp">BMP</option>
+                        <option value="tiff">TIFF</option>
                     </select>
                 </div>
 
@@ -53,13 +54,13 @@
                     <div id="generic-options" class="space-y-4">
                          <h3 class="text-lg font-semibold text-gray-200">Optional Settings</h3>
                         <div>
-                            <label for="audioBitrate" class="block mb-2 text-sm font-medium text-gray-300">Audio Bitrate (kbps)</label>
-                            <select id="audioBitrate" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
-                                <option value="">Automatic</option>
-                                <option value="320">320 (High Quality)</option>
-                                <option value="192">192 (Good Quality)</option>
-                                <option value="128">128 (Standard Quality)</option>
-                                <option value="64">64 (Low Quality)</option>
+                            <label for="resolution" class="block mb-2 text-sm font-medium text-gray-300">Max Width (px)</label>
+                            <select id="resolution" class="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block w-full p-2.5">
+                                <option value="">Original</option>
+                                <option value="1920">1920</option>
+                                <option value="1280">1280</option>
+                                <option value="800">800</option>
+                                <option value="400">400</option>
                             </select>
                         </div>
                     </div>
@@ -90,9 +91,9 @@
 
     <script>
         const convertBtn = document.getElementById('convertBtn');
-        const audioFileInput = document.getElementById('audioFile');
+        const imageFileInput = document.getElementById('imageFile');
         const formatSelect = document.getElementById('format');
-        const audioBitrateSelect = document.getElementById('audioBitrate');
+        const resolutionSelect = document.getElementById('resolution');
         const uploadContainer = document.getElementById('upload-container');
         const statusContainer = document.getElementById('status-container');
         const progressWrapper = document.getElementById('progress-wrapper');
@@ -104,7 +105,7 @@
         let pollingInterval;
 
         convertBtn.addEventListener('click', async () => {
-            const file = audioFileInput.files[0];
+            const file = imageFileInput.files[0];
             const format = formatSelect.value;
 
             if (!file) {
@@ -133,9 +134,9 @@
         function uploadFile(uploadId, file, format) {
             return new Promise((resolve, reject) => {
                 const formData = new FormData();
-                formData.append('audioFile', file);
+                formData.append('imageFile', file);
                 formData.append('format', format);
-                formData.append('audioBitrate', audioBitrateSelect.value);
+                formData.append('resolution', resolutionSelect.value);
 
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', `/api/uploads/${uploadId}`, true);
@@ -153,9 +154,9 @@
 
                 xhr.onload = () => {
                     if (xhr.status >= 200 && xhr.status < 300) {
+                        // Image conversion is fast, so we might not see "converting" status
                         progressLabel.textContent = 'Processing file...';
-                        progressBar.style.width = '0%';
-                        progressText.textContent = '0%';
+                        progressBar.classList.add('animate-pulse');
                         resolve(xhr.response);
                     } else {
                         reject(new Error(xhr.responseText || `Upload failed with status: ${xhr.status}`));
@@ -177,18 +178,16 @@
                     
                     const data = await statusResponse.json();
 
-                    if (data.status === 'queued') {
-                        progressLabel.textContent = `Queued... (Position: ${data.queuePosition})`;
-                        progressBar.style.width = '0%';
-                        progressText.textContent = 'Waiting';
-                    } else if (data.status === 'converting') {
-                        progressLabel.textContent = 'Converting...';
-                        const percent = data.progressPercentage || 0;
-                        progressBar.style.width = percent + '%';
-                        progressText.textContent = percent + '%';
+                    // For fast image conversions, we might jump straight to finished
+                    if (data.status === 'queued' || data.status === 'converting') {
+                        progressLabel.textContent = `Converting...`;
+                        progressBar.style.width = '50%'; // Visual cue that something is happening
+                        progressBar.classList.add('animate-pulse');
+                        progressText.textContent = 'Processing';
                     } else if (data.status === 'finished') {
                         clearInterval(pollingInterval);
                         progressLabel.textContent = 'Complete!';
+                        progressBar.classList.remove('animate-pulse');
                         progressBar.style.width = '100%';
                         progressText.textContent = '100%';
                         setTimeout(() => displaySuccess(data.downloadUrl), 500);
@@ -201,15 +200,21 @@
                     console.error('Polling error:', error);
                     displayError('Lost connection to the server.');
                 }
-            }, 1000);
+            }, 500); // Poll faster for images
         }
 
         function displaySuccess(downloadUrl) {
             progressWrapper.classList.add('hidden');
+            const previewHtml = `
+                <div class="mt-4 border border-gray-600 rounded-lg p-2 bg-gray-900/50">
+                    <img src="${downloadUrl}" alt="Image Preview" class="mx-auto rounded-md max-h-64">
+                </div>`;
+            
             messageBox.innerHTML = `
                 <div class="bg-green-500/20 border border-green-500 text-green-300 px-4 py-3 rounded-lg relative" role="alert">
                     <strong class="font-bold">Success!</strong>
-                    <span class="block sm:inline">Audio converted successfully.</span>
+                    <span class="block sm:inline">Image converted successfully.</span>
+                    ${previewHtml}
                     <div class="mt-4">
                          <a href="${downloadUrl}" download class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg inline-flex items-center transition-colors">
                             <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>

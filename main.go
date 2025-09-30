@@ -66,6 +66,7 @@ func main() {
 	r := chi.NewRouter()
 	r.Get("/", serveIndex)
 	r.Get("/audio", serveAudioPage)
+	r.Get("/image", serveImagePage) // New route for image conversion
 	r.Post("/api/uploads/initiate", initiateUploadHandler)
 	r.Post("/api/uploads/{uploadId}", fileUploadHandler)
 	r.Get("/api/uploads/{uploadId}/status", statusHandler)
@@ -98,6 +99,11 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 // serveAudioPage serves the audio conversion HTML page.
 func serveAudioPage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "templates/audio.html")
+}
+
+// serveImagePage serves the image conversion HTML page.
+func serveImagePage(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "templates/image.html")
 }
 
 // initiateUploadHandler creates a new job entry.
@@ -154,7 +160,7 @@ func validateAndParseOptions(r *http.Request) (*ConversionOptions, error) {
 	if opts.Format == "" {
 		return nil, fmt.Errorf("target format must be specified")
 	}
-	validFormats := []string{"mp4", "webm", "mov", "avi", "mkv", "gif", "mp3", "wav", "ogg", "flac"}
+	validFormats := []string{"mp4", "webm", "mov", "avi", "mkv", "gif", "mp3", "wav", "ogg", "flac", "jpg", "jpeg", "png", "webp", "bmp", "tiff"}
 	isValidFormat := false
 	for _, f := range validFormats {
 		if f == opts.Format {
@@ -163,11 +169,24 @@ func validateAndParseOptions(r *http.Request) (*ConversionOptions, error) {
 		}
 	}
 	if !isValidFormat {
-		return nil, fmt.Errorf("invalid target format specified")
+		return nil, fmt.Errorf("invalid target format specified: %s", opts.Format)
 	}
 
-	// --- GIF-specific parameter validation ---
-	if opts.Format == "gif" {
+	// --- Parameter validation based on format type ---
+	if isImage(opts.Format) {
+		if val, ok := submittedOptions["bitrate"]; ok && val != "" {
+			return nil, fmt.Errorf("bitrate is not a valid option for image formats")
+		}
+		if val, ok := submittedOptions["audioBitrate"]; ok && val != "" {
+			return nil, fmt.Errorf("audioBitrate is not a valid option for image formats")
+		}
+		if val, ok := submittedOptions["framerate"]; ok && val != "" {
+			return nil, fmt.Errorf("framerate is not a valid option for image formats")
+		}
+		if val, ok := submittedOptions["gifLoop"]; ok && val != "" {
+			return nil, fmt.Errorf("gifLoop is not a valid option for image formats")
+		}
+	} else if opts.Format == "gif" {
 		if _, ok := submittedOptions["bitrate"]; ok {
 			return nil, fmt.Errorf("bitrate is not a valid option for format gif")
 		}
@@ -193,16 +212,19 @@ func validateAndParseOptions(r *http.Request) (*ConversionOptions, error) {
 		if err != nil {
 			return nil, fmt.Errorf("resolution must be a number")
 		}
-		validResolutions := []int{1080, 720, 480, 360, 240}
-		isValidRes := false
-		for _, res := range validResolutions {
-			if res == opts.Resolution {
-				isValidRes = true
-				break
+		// Allow any reasonable resolution for images, but validate for videos/gifs
+		if !isImage(opts.Format) {
+			validResolutions := []int{1080, 720, 480, 360, 240}
+			isValidRes := false
+			for _, res := range validResolutions {
+				if res == opts.Resolution {
+					isValidRes = true
+					break
+				}
 			}
-		}
-		if !isValidRes {
-			return nil, fmt.Errorf("invalid resolution value")
+			if !isValidRes {
+				return nil, fmt.Errorf("invalid resolution value")
+			}
 		}
 	}
 
@@ -264,8 +286,11 @@ func fileUploadHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		file, header, err = r.FormFile("audioFile")
 		if err != nil {
-			http.Error(w, "Could not retrieve file.", http.StatusBadRequest)
-			return
+			file, header, err = r.FormFile("imageFile")
+			if err != nil {
+				http.Error(w, "Could not retrieve file. Expected 'videoFile', 'audioFile', or 'imageFile'.", http.StatusBadRequest)
+				return
+			}
 		}
 	}
 	defer file.Close()
@@ -425,6 +450,15 @@ func buildFFmpegCommand(job *ConversionJob, opts *ConversionOptions, inputPath, 
 		args = append(args, "-af", "aformat=channel_layouts='7.1|5.1|stereo'")
 		if opts.AudioBitrate != 0 {
 			args = append(args, "-b:a", fmt.Sprintf("%dk", opts.AudioBitrate))
+		}
+	} else if isImage(opts.Format) {
+		var vfArgs []string
+		if opts.Resolution != 0 {
+			// Scale by width, preserving aspect ratio
+			vfArgs = append(vfArgs, fmt.Sprintf("scale=%d:-1", opts.Resolution))
+		}
+		if len(vfArgs) > 0 {
+			args = append(args, "-vf", strings.Join(vfArgs, ","))
 		}
 	} else { // Audio arguments
 		switch opts.Format {
@@ -590,6 +624,15 @@ func cleanupWorker() {
 func isVideo(format string) bool {
 	switch format {
 	case "mp4", "webm", "mov", "avi", "mkv", "gif":
+		return true
+	default:
+		return false
+	}
+}
+
+func isImage(format string) bool {
+	switch format {
+	case "jpg", "jpeg", "png", "webp", "bmp", "tiff":
 		return true
 	default:
 		return false
