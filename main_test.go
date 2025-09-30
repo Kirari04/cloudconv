@@ -137,11 +137,20 @@ func TestConversionFunctionality(t *testing.T) {
 		"testdata/test5.ogg",
 		"testdata/test5.flac",
 	}
+	successfulImageTestFiles := []string{
+		"testdata/test5.jpg",
+		"testdata/test5.png",
+		"testdata/test5.webp",
+		"testdata/test5.bmp",
+		"testdata/test5.tiff",
+		"testdata/test5.gif",
+	}
 	// A single file for invalid input tests
 	const invalidTestFile = "testdata/test5.mkv"
 
 	// --- Check that all required files exist ---
 	allFiles := append(successfulVideoTestFiles, successfulAudioTestFiles...)
+	allFiles = append(allFiles, successfulImageTestFiles...)
 	for _, file := range allFiles {
 		if _, err := os.Stat(file); os.IsNotExist(err) {
 			t.Fatalf("Test media file not found: %s. Please ensure all test files are in the 'testdata' directory.", file)
@@ -365,6 +374,81 @@ func TestConversionFunctionality(t *testing.T) {
 		}
 	})
 
+	t.Run("Successful Image Conversions", func(t *testing.T) {
+		testCases := []struct {
+			name           string
+			options        map[string]string
+			expectedSuffix string
+		}{
+			{name: "PNG Conversion", options: map[string]string{"format": "png"}, expectedSuffix: ".png"},
+			{name: "JPG Conversion with Resize", options: map[string]string{"format": "jpg", "resolution": "100"}, expectedSuffix: ".jpg"},
+			{name: "WEBP Conversion", options: map[string]string{"format": "webp"}, expectedSuffix: ".webp"},
+			{name: "BMP Conversion", options: map[string]string{"format": "bmp"}, expectedSuffix: ".bmp"},
+			{name: "TIFF Conversion", options: map[string]string{"format": "tiff"}, expectedSuffix: ".tiff"},
+		}
+
+		for _, inputFile := range successfulImageTestFiles {
+			for _, tc := range testCases {
+				if strings.HasSuffix(inputFile, tc.expectedSuffix) {
+					continue // Skip converting a file to its own format
+				}
+				inputFileName := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
+				testName := fmt.Sprintf("Image_From_%s_to_%s", inputFileName, tc.name)
+
+				t.Run(testName, func(t *testing.T) {
+					// 1. Initiate upload
+					resp, err := http.Post(server.URL+"/api/uploads/initiate", "application/json", nil)
+					if err != nil {
+						t.Fatalf("Failed to initiate upload: %v", err)
+					}
+					if resp.StatusCode != http.StatusCreated {
+						t.Fatalf("Expected status 201 Created, got %d", resp.StatusCode)
+					}
+					var initResponse map[string]string
+					json.NewDecoder(resp.Body).Decode(&initResponse)
+					jobID := initResponse["uploadId"]
+					resp.Body.Close()
+
+					// 2. Upload image file
+					uploadURL := server.URL + "/api/uploads/" + jobID
+					req, err := createUploadRequest(uploadURL, inputFile, "imageFile", tc.options, true)
+					if err != nil {
+						t.Fatalf("Failed to create upload request: %v", err)
+					}
+
+					uploadResp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatalf("Failed to perform upload request: %v", err)
+					}
+					if uploadResp.StatusCode != http.StatusOK {
+						bodyBytes, _ := io.ReadAll(uploadResp.Body)
+						t.Fatalf("Expected status 200 OK on upload, got %d. Body: %s", uploadResp.StatusCode, string(bodyBytes))
+					}
+					uploadResp.Body.Close()
+
+					// 3. Poll for status until finished
+					finalJob := pollUntilFinished(t, server.URL, jobID)
+
+					if finalJob.Status != "finished" {
+						t.Fatalf("Expected job status 'finished', got '%s' with error: %s", finalJob.Status, finalJob.ErrorMessage)
+					}
+					if !strings.HasSuffix(finalJob.DownloadURL, tc.expectedSuffix) {
+						t.Errorf("Expected download URL to end with %s, got %s", tc.expectedSuffix, finalJob.DownloadURL)
+					}
+
+					// 4. Verify converted file exists and clean up
+					convertedFileName := jobID + tc.expectedSuffix
+					convertedFilePath := filepath.Join(convertedDir, convertedFileName)
+					if _, err := os.Stat(convertedFilePath); os.IsNotExist(err) {
+						t.Errorf("Converted file was not found at %s", convertedFilePath)
+					} else {
+						os.Remove(convertedFilePath)
+					}
+				})
+			}
+		}
+	})
+
 	t.Run("Invalid User Inputs", func(t *testing.T) {
 		invalidTestCases := []struct {
 			name        string
@@ -490,6 +574,55 @@ func TestConversionFunctionality(t *testing.T) {
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("Invalid Image Upload Type", func(t *testing.T) {
+		// 1. Initiate upload
+		resp, err := http.Post(server.URL+"/api/uploads/initiate", "application/json", nil)
+		if err != nil {
+			t.Fatalf("Failed to initiate upload: %v", err)
+		}
+		var initResponse map[string]string
+		json.NewDecoder(resp.Body).Decode(&initResponse)
+		jobID := initResponse["uploadId"]
+		resp.Body.Close()
+
+		// 2. Attempt to upload a video file using the 'imageFile' form field
+		uploadURL := server.URL + "/api/uploads/" + jobID
+		options := map[string]string{"format": "png"}
+		req, err := createUploadRequest(uploadURL, "testdata/test5.mp4", "imageFile", options, true)
+		if err != nil {
+			t.Fatalf("Failed to create upload request: %v", err)
+		}
+
+		uploadResp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Failed to perform upload request: %v", err)
+		}
+		defer uploadResp.Body.Close()
+
+		if uploadResp.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400 Bad Request, got %d", uploadResp.StatusCode)
+		}
+
+		bodyBytes, _ := io.ReadAll(uploadResp.Body)
+		bodyString := string(bodyBytes)
+		expectedMsg := "Invalid input file type for image conversion"
+		if !strings.Contains(bodyString, expectedMsg) {
+			t.Errorf("Expected response body to contain '%s', but got '%s'", expectedMsg, bodyString)
+		}
+
+		// 3. Verify job status is 'error'
+		jobStoreMutex.RLock()
+		job, exists := jobStore[jobID]
+		jobStoreMutex.RUnlock()
+
+		if !exists || job.Status != "error" {
+			t.Errorf("Expected job status to be 'error', got '%s'", job.Status)
+		}
+		if !strings.Contains(job.ErrorMessage, expectedMsg) {
+			t.Errorf("Expected job error message to contain '%s', but got '%s'", expectedMsg, job.ErrorMessage)
 		}
 	})
 }
