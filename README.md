@@ -1,31 +1,40 @@
-# CloudConv - Web-Based Media Converter
+CloudConv - Web-Based Media Converter
+=====================================
+
 ======================================
 
-CloudConv is a powerful, self-hostable web-based media converter built with Go and FFmpeg. It provides a clean, modern interface to upload video files and convert them to various formats in real-time, with a robust backend that includes a job queue, progress tracking, and automatic cleanup.
+CloudConv is a powerful, self-hostable web-based media converter built with Go and FFmpeg. It provides a clean, modern interface to upload video and audio files and convert them to various formats in real-time, with a robust backend that includes a job queue, progress tracking, and automatic cleanup.
 
 The application is fully containerized, making setup incredibly simple.
 
-![CloudConv Screenshot](./example.png) <!-- Replace with a real screenshot if you have one -->
+![CloudConv Screenshot](./example.png)
 
-## ✨ Features
+✨ Features
+----------
 
--   **Modern Web UI**: A sleek, responsive interface built with Tailwind CSS.
+-   **Modern Web UI**: A sleek, responsive interface built with Tailwind CSS for both video and audio conversion.
+
 -   **Real-Time Progress**: Watch the upload and conversion progress live.
+
 -   **Job Queueing**: Handles multiple conversions sequentially.
--   **Format Variety**: Convert to MP4, WebM, MOV, AVI, MKV, and animated GIF.
--   **Customizable Outputs**: Control resolution, bitrate, framerate, and GIF loop settings.
+
+-   **Extensive Format Support**: Convert videos (MP4, WebM, MOV, AVI, MKV, GIF) and audio (MP3, WAV, OGG, FLAC).
+
+-   **Customizable Outputs**: Control resolution, video/audio bitrates, framerate, and GIF loop settings.
+
 -   **Simple Setup**: Get up and running in minutes with Docker.
+
 -   **Automatic Cleanup**: Old jobs and files are automatically purged to save disk space.
 
----
-
-## 🚀 Getting Started (Recommended)
+🚀 Getting Started (Recommended)
+--------------------------------
 
 The easiest and recommended way to run CloudConv is by using Docker. This method avoids the need to install Go or FFmpeg on your host machine.
 
 ### Prerequisites
 
 -   [Docker](https://docs.docker.com/get-docker/)
+
 -   [Docker Compose](https://docs.docker.com/compose/install/)
 
 ### Installation
@@ -66,11 +75,10 @@ The easiest and recommended way to run CloudConv is by using Docker. This method
 
 4.  **Access CloudConv:**
 
-    Open your web browser and navigate to **http://localhost:3000**.
+    Open your web browser and navigate to **http://localhost:3000** for video conversion or **http://localhost:3000/audio** for audio conversion.
 
----
-
-## 🔧 Manual Setup (For Development)
+🔧 Manual Setup (For Development)
+---------------------------------
 
 If you prefer to run the application without Docker for development purposes, you can follow these steps.
 
@@ -86,7 +94,7 @@ You can verify they are installed by running `go version` and `ffmpeg -version`.
 1.  **Clone the Repository:**
 
     ```bash
-    git clone https://github.com/your-username/cloudconv.git
+    git clone https://github.com/Kirari04/cloudconv.git
     cd cloudconv
     ```
 
@@ -106,23 +114,27 @@ You can verify they are installed by running `go version` and `ffmpeg -version`.
 
     The server will start on `http://localhost:3000`.
 
----
+⚙️ How to Use
+-------------
 
-## ⚙️ How to Use
+1.  Navigate to `http://localhost:3000` for video conversion or `http://localhost:3000/audio` for audio conversion.
 
-1.  Navigate to `http://localhost:3000`.
-2.  Click **"Select Video File"** to choose a file from your computer.
+2.  Click **"Select Video File"** or **"Select Audio File"** to choose a file from your computer.
+
 3.  Select the desired **Target Format** from the dropdown menu.
-4.  (Optional) Adjust settings like resolution, bitrate, or GIF options.
+
+4.  (Optional) Adjust settings like resolution (for video), audio bitrate, or GIF options.
+
 5.  Click **"Upload & Convert"**.
+
 6.  The UI will show the upload progress, followed by the conversion progress in real-time.
+
 7.  Once finished, a download link for the converted file will appear.
 
----
+📁 Project Structure
+--------------------
 
-## 📁 Project Structure
-
-```
+```bash
 /cloudconv
 |-- .dockerignore
 |-- .gitignore
@@ -134,8 +146,10 @@ You can verify they are installed by running `go version` and `ffmpeg -version`.
 |-- Makefile             # Helper commands for development
 |-- README.md
 |-- /templates
-|   |-- index.html       # Frontend single-page application
+|   |-- index.html       # Frontend for video conversion
+|   |-- audio.html       # Frontend for audio conversion
 |-- /uploads/            # Stores original uploaded files (temporary)
 |-- /converted/          # Stores converted files
 |-- /testdata/           # Test files
+
 ```
