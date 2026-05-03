@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kirari04/cloudconv/internal/artifacts"
 	"github.com/kirari04/cloudconv/internal/auth"
 	"github.com/kirari04/cloudconv/internal/config"
 	"github.com/kirari04/cloudconv/internal/media"
@@ -48,6 +50,15 @@ type CompleteRequest struct {
 	Preset       string        `json:"preset"`
 	Options      media.Options `json:"options"`
 }
+
+type AdminCancelResult struct {
+	Upload           *store.Upload `json:"upload"`
+	CanceledJobIDs   []string      `json:"canceledJobIds"`
+	ArtifactsDeleted bool          `json:"artifactsDeleted"`
+	ArtifactError    *string       `json:"artifactError"`
+}
+
+type AdminJobCancelFunc func(ctx context.Context, jobID, adminUserID, note string) (*store.Job, error)
 
 func New(cfg config.Config, s *store.Store) *Service {
 	return &Service{cfg: cfg, store: s}
@@ -337,6 +348,59 @@ func (u *Service) CreateCompletedUpload(ctx context.Context, filename, path stri
 	return &upload, nil
 }
 
+func (u *Service) AdminCancel(ctx context.Context, uploadID, adminUserID, note string, cancelJob AdminJobCancelFunc) (AdminCancelResult, error) {
+	upload, err := u.store.UploadByID(ctx, uploadID)
+	if err != nil {
+		return AdminCancelResult{}, err
+	}
+	jobs, err := u.store.JobsByUploadID(ctx, uploadID)
+	if err != nil {
+		return AdminCancelResult{}, err
+	}
+	canceledJobIDs := make([]string, 0)
+	for _, job := range jobs {
+		if job.Status != "queued" && job.Status != "converting" {
+			continue
+		}
+		if cancelJob != nil {
+			if _, err := cancelJob(ctx, job.ID, adminUserID, note); err != nil && !errors.Is(err, store.ErrTerminalState) {
+				return AdminCancelResult{}, err
+			}
+		}
+		canceledJobIDs = append(canceledJobIDs, job.ID)
+	}
+	cleanup := artifacts.DeleteUploadArtifacts(upload, u.cfg.UploadDir)
+	artifactError := cleanup.ErrorString()
+	updated, err := u.store.CancelUploadForAdmin(ctx, uploadID, adminUserID, note, artifactError)
+	if err != nil {
+		return AdminCancelResult{}, err
+	}
+	metadata := uploadEventMetadata(map[string]any{
+		"adminUserId":    adminUserID,
+		"note":           note,
+		"canceledJobIds": canceledJobIDs,
+		"deleted":        cleanup.Deleted,
+		"errors":         cleanup.Errors,
+	})
+	_ = u.store.AddEvent(ctx, store.Event{
+		Level:        "info",
+		Kind:         "upload.canceled",
+		ActorUserID:  &adminUserID,
+		UploadID:     &upload.ID,
+		Message:      "upload canceled by admin",
+		MetadataJSON: metadata,
+		IPAddress:    &upload.IPAddress,
+		UserAgent:    &upload.UserAgent,
+		CreatedAt:    time.Now().UTC(),
+	})
+	return AdminCancelResult{
+		Upload:           updated,
+		CanceledJobIDs:   canceledJobIDs,
+		ArtifactsDeleted: artifactError == nil,
+		ArtifactError:    artifactError,
+	}, nil
+}
+
 func AuthorizeUpload(upload *store.Upload, user *store.User, token string) error {
 	if upload.OwnerUserID != nil {
 		if user == nil {
@@ -494,6 +558,15 @@ func (u *Service) event(ctx context.Context, level, kind string, actor, uploadID
 		UserAgent:   &ua,
 		CreatedAt:   time.Now().UTC(),
 	})
+}
+
+func uploadEventMetadata(value map[string]any) *string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	out := string(data)
+	return &out
 }
 
 var contentRangeRE = regexp.MustCompile(`^bytes (\d+)-(\d+)/(\d+)$`)

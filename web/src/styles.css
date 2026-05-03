@@ -4,109 +4,99 @@
 
 :root {
   color-scheme: light;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  background: #f6f7f9;
-  color: #18202f;
+  --brand-500: #536dfa;
+  --brand-600: #394df1;
+  --brand-700: #2b39db;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    linear-gradient(180deg, rgba(255,255,255,0.92), rgba(246,247,249,0.96)),
-    radial-gradient(circle at 0 0, rgba(30, 126, 111, 0.12), transparent 32rem);
+  background-color: #f8fafc;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-button, input, select {
-  font: inherit;
+button, input, select, textarea {
+  font-family: inherit;
 }
 
 .shell {
   min-height: 100vh;
 }
 
+/* Modern Card/Panel */
 .panel {
-  border: 1px solid #d8dde8;
-  background: rgba(255,255,255,0.92);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  @apply bg-white border border-slate-200/80 shadow-soft;
 }
 
+/* Dropzone refinement */
 .dropzone {
-  border: 1.5px dashed #9aa6ba;
-  background: #ffffff;
+  @apply border-2 border-dashed border-slate-300 bg-slate-50/50 transition-all duration-200 ease-in-out;
 }
 
 .dropzone.dragging {
-  border-color: #187466;
-  background: #eefaf7;
+  @apply border-brand-500 bg-brand-50/50 scale-[1.01];
 }
 
+/* Button Refinement */
 .btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  border-radius: 0.5rem;
-  min-height: 2.5rem;
-  padding: 0.55rem 0.8rem;
-  font-weight: 650;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:pointer-events-none;
 }
 
 .btn-primary {
-  color: white;
-  background: #176b5f;
-}
-
-.btn-primary:hover {
-  background: #12584f;
+  @apply bg-brand-600 text-white hover:bg-brand-700 shadow-sm shadow-brand-200;
 }
 
 .btn-secondary {
-  border: 1px solid #c7d0df;
-  background: #fff;
-  color: #263244;
-}
-
-.btn-secondary:hover {
-  background: #f1f4f8;
+  @apply bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:border-slate-300;
 }
 
 .btn-danger {
-  color: #fff;
-  background: #b42318;
+  @apply bg-red-600 text-white hover:bg-red-700 shadow-sm shadow-red-100;
 }
 
+.btn-ghost {
+  @apply text-slate-600 hover:bg-slate-100;
+}
+
+/* Field Refinement */
 .field {
-  width: 100%;
-  min-height: 2.5rem;
-  border: 1px solid #c7d0df;
-  border-radius: 0.5rem;
-  background: #fff;
-  padding: 0.55rem 0.7rem;
+  @apply w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 placeholder:text-slate-400;
 }
 
+/* Badge Refinement */
 .badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 0.2rem 0.55rem;
-  font-size: 0.75rem;
-  font-weight: 700;
-  background: #eef2f7;
-  color: #354156;
+  @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200;
 }
 
+.badge-success {
+  @apply bg-emerald-50 text-emerald-700 border-emerald-100;
+}
+
+.badge-brand {
+  @apply bg-brand-50 text-brand-700 border-brand-100;
+}
+
+/* Progress Bar Refinement */
 .progress-track {
-  height: 0.55rem;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e5eaf2;
+  @apply h-2 w-full overflow-hidden rounded-full bg-slate-100;
 }
 
 .progress-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: #1f8a7a;
-  transition: width 0.2s ease;
+  @apply h-full bg-brand-500 transition-all duration-300 ease-out;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-200 rounded-full hover:bg-slate-300 transition-colors;
 }

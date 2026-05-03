@@ -86,7 +86,10 @@ func (s *Server) Routes() stdhttp.Handler {
 		r.Use(s.adminOnly)
 		r.Get("/summary", s.adminSummaryHandler)
 		r.Get("/jobs", s.adminJobsHandler)
+		r.Post("/jobs/{jobId}/cancel", s.adminCancelJobHandler)
+		r.Delete("/jobs/{jobId}", s.adminRemoveJobHandler)
 		r.Get("/uploads", s.adminUploadsHandler)
+		r.Post("/uploads/{uploadId}/cancel", s.adminCancelUploadHandler)
 		r.Get("/events", s.adminEventsHandler)
 		r.Get("/settings", s.adminSettingsHandler)
 		r.Patch("/settings", s.adminPatchSettingsHandler)
@@ -168,7 +171,7 @@ func (s *Server) configHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		"chunk_size_bytes":       settings["chunk_size_bytes"],
 	}
 	writeJSON(w, 200, map[string]any{
-		"catalog":     media.DefaultCatalog(),
+		"catalog":     media.RuntimeCatalog(r.Context()),
 		"settings":    public,
 		"setupNeeded": setupNeeded,
 		"auth":        currentSession(r),
@@ -314,7 +317,7 @@ func (s *Server) cancelJobHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) 
 		return
 	}
 	if err := s.jobs.Cancel(r.Context(), job.ID); err != nil {
-		writeError(w, 500, "could not cancel job")
+		writeError(w, statusForError(err), err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "canceled"})
@@ -486,33 +489,109 @@ func (s *Server) adminSummaryHandler(w stdhttp.ResponseWriter, r *stdhttp.Reques
 }
 
 func (s *Server) adminJobsHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	limit := queryLimit(r, 100)
-	jobs, err := s.store.ListJobs(r.Context(), limit)
+	filter := store.AdminJobFilter{
+		Limit:          queryLimit(r, 50),
+		Offset:         queryOffset(r),
+		Status:         r.URL.Query().Get("status"),
+		TargetFormat:   r.URL.Query().Get("targetFormat"),
+		UploadID:       r.URL.Query().Get("uploadId"),
+		UserID:         r.URL.Query().Get("userId"),
+		Query:          r.URL.Query().Get("q"),
+		IncludeRemoved: queryBool(r, "includeRemoved"),
+	}
+	jobs, total, err := s.store.ListJobsFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, 500, "could not load jobs")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"jobs": jobs})
+	writeJSON(w, 200, map[string]any{"jobs": jobs, "total": total, "limit": filter.Limit, "offset": filter.Offset})
+}
+
+func (s *Server) adminCancelJobHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	current := currentSession(r)
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := readOptionalJSON(r, &body); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	job, err := s.jobs.CancelForAdmin(r.Context(), chi.URLParam(r, "jobId"), current.User.ID, body.Note)
+	if err != nil {
+		writeError(w, adminActionStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) adminRemoveJobHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	current := currentSession(r)
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := readOptionalJSON(r, &body); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	job, deleted, artifactError, err := s.jobs.Remove(r.Context(), chi.URLParam(r, "jobId"), current.User.ID, body.Note)
+	if err != nil {
+		writeError(w, adminActionStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job, "artifactsDeleted": deleted, "artifactError": artifactError})
 }
 
 func (s *Server) adminUploadsHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	limit := queryLimit(r, 100)
-	uploads, err := s.store.ListUploads(r.Context(), limit)
+	filter := store.AdminUploadFilter{
+		Limit:     queryLimit(r, 50),
+		Offset:    queryOffset(r),
+		Status:    r.URL.Query().Get("status"),
+		MediaType: r.URL.Query().Get("mediaType"),
+		UserID:    r.URL.Query().Get("userId"),
+		Query:     r.URL.Query().Get("q"),
+	}
+	uploads, total, err := s.store.ListUploadsFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, 500, "could not load uploads")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"uploads": uploads})
+	writeJSON(w, 200, map[string]any{"uploads": uploads, "total": total, "limit": filter.Limit, "offset": filter.Offset})
+}
+
+func (s *Server) adminCancelUploadHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	current := currentSession(r)
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := readOptionalJSON(r, &body); err != nil {
+		writeError(w, 400, err.Error())
+		return
+	}
+	result, err := s.uploads.AdminCancel(r.Context(), chi.URLParam(r, "uploadId"), current.User.ID, body.Note, s.jobs.CancelForAdmin)
+	if err != nil {
+		writeError(w, adminActionStatus(err), err.Error())
+		return
+	}
+	writeJSON(w, 200, result)
 }
 
 func (s *Server) adminEventsHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	limit := queryLimit(r, 200)
-	events, err := s.store.ListEvents(r.Context(), limit)
+	filter := store.AdminEventFilter{
+		Limit:    queryLimit(r, 100),
+		Offset:   queryOffset(r),
+		Level:    r.URL.Query().Get("level"),
+		Kind:     r.URL.Query().Get("kind"),
+		JobID:    r.URL.Query().Get("jobId"),
+		UploadID: r.URL.Query().Get("uploadId"),
+		UserID:   r.URL.Query().Get("userId"),
+		Query:    r.URL.Query().Get("q"),
+	}
+	events, total, err := s.store.ListEventsFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, 500, "could not load events")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"events": events})
+	writeJSON(w, 200, map[string]any{"events": events, "total": total, "limit": filter.Limit, "offset": filter.Offset})
 }
 
 func (s *Server) adminSettingsHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -540,12 +619,28 @@ func (s *Server) adminPatchSettingsHandler(w stdhttp.ResponseWriter, r *stdhttp.
 }
 
 func (s *Server) adminUsersHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	users, err := s.store.ListUsers(r.Context())
+	var disabled *bool
+	if raw := r.URL.Query().Get("disabled"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeError(w, 400, "invalid disabled filter")
+			return
+		}
+		disabled = &value
+	}
+	filter := store.AdminUserFilter{
+		Limit:    queryLimit(r, 50),
+		Offset:   queryOffset(r),
+		Role:     r.URL.Query().Get("role"),
+		Disabled: disabled,
+		Query:    r.URL.Query().Get("q"),
+	}
+	users, total, err := s.store.ListUsersFiltered(r.Context(), filter)
 	if err != nil {
 		writeError(w, 500, "could not load users")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"users": users})
+	writeJSON(w, 200, map[string]any{"users": users, "total": total, "limit": filter.Limit, "offset": filter.Offset})
 }
 
 func (s *Server) adminCreateUserHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -563,6 +658,8 @@ func (s *Server) adminCreateUserHandler(w stdhttp.ResponseWriter, r *stdhttp.Req
 		writeError(w, 400, err.Error())
 		return
 	}
+	current := currentSession(r)
+	_ = s.store.AddEvent(r.Context(), store.Event{Level: "info", Kind: "user.created", ActorUserID: &current.User.ID, Message: "user created", MetadataJSON: metadataJSON(map[string]any{"userId": user.ID, "email": user.Email, "role": user.Role}), CreatedAt: time.Now().UTC()})
 	writeJSON(w, 201, map[string]any{"user": user})
 }
 
@@ -586,9 +683,27 @@ func (s *Server) adminPatchUserHandler(w stdhttp.ResponseWriter, r *stdhttp.Requ
 	if body.Disabled != nil {
 		fields["disabled"] = *body.Disabled
 	}
-	if err := s.store.UpdateUser(r.Context(), chi.URLParam(r, "userId"), fields); err != nil {
+	targetID := chi.URLParam(r, "userId")
+	current := currentSession(r)
+	if err := s.validateUserChange(r.Context(), current.User.ID, targetID, body.Role, body.Disabled, false); err != nil {
+		writeError(w, statusForError(err), err.Error())
+		return
+	}
+	if err := s.store.UpdateUser(r.Context(), targetID, fields); err != nil {
 		writeError(w, 400, err.Error())
 		return
+	}
+	if body.Disabled != nil {
+		kind := "user.enabled"
+		message := "user enabled"
+		if *body.Disabled {
+			kind = "user.disabled"
+			message = "user disabled"
+		}
+		_ = s.store.AddEvent(r.Context(), store.Event{Level: "info", Kind: kind, ActorUserID: &current.User.ID, Message: message, MetadataJSON: metadataJSON(map[string]any{"userId": targetID}), CreatedAt: time.Now().UTC()})
+	}
+	if body.Role != nil {
+		_ = s.store.AddEvent(r.Context(), store.Event{Level: "info", Kind: "user.role_changed", ActorUserID: &current.User.ID, Message: "user role changed", MetadataJSON: metadataJSON(map[string]any{"userId": targetID, "role": *body.Role}), CreatedAt: time.Now().UTC()})
 	}
 	s.adminUsersHandler(w, r)
 }
@@ -598,6 +713,12 @@ func (s *Server) adminResetPasswordHandler(w stdhttp.ResponseWriter, r *stdhttp.
 		Password string `json:"password"`
 	}
 	_ = readJSON(r, &body)
+	targetID := chi.URLParam(r, "userId")
+	if _, err := s.store.UserByID(r.Context(), targetID); err != nil {
+		writeError(w, 404, "user not found")
+		return
+	}
+	generated := body.Password == ""
 	if body.Password == "" {
 		body.Password = uuid.NewString()[:12] + "Aa1!"
 	}
@@ -606,18 +727,32 @@ func (s *Server) adminResetPasswordHandler(w stdhttp.ResponseWriter, r *stdhttp.
 		writeError(w, 400, err.Error())
 		return
 	}
-	if err := s.store.UpdateUser(r.Context(), chi.URLParam(r, "userId"), map[string]any{"password_hash": hash}); err != nil {
+	if err := s.store.UpdateUser(r.Context(), targetID, map[string]any{"password_hash": hash}); err != nil {
 		writeError(w, 400, err.Error())
 		return
 	}
+	current := currentSession(r)
+	_ = s.store.AddEvent(r.Context(), store.Event{Level: "info", Kind: "user.password_reset", ActorUserID: &current.User.ID, Message: "user password reset", MetadataJSON: metadataJSON(map[string]any{"userId": targetID, "generated": generated}), CreatedAt: time.Now().UTC()})
 	writeJSON(w, 200, map[string]string{"password": body.Password})
 }
 
 func (s *Server) adminDeleteUserHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	if err := s.store.DeleteUser(r.Context(), chi.URLParam(r, "userId")); err != nil {
+	targetID := chi.URLParam(r, "userId")
+	current := currentSession(r)
+	target, err := s.store.UserByID(r.Context(), targetID)
+	if err != nil {
+		writeError(w, 404, "user not found")
+		return
+	}
+	if err := s.validateUserChange(r.Context(), current.User.ID, targetID, nil, nil, true); err != nil {
+		writeError(w, statusForError(err), err.Error())
+		return
+	}
+	if err := s.store.DeleteUser(r.Context(), targetID); err != nil {
 		writeError(w, 500, "could not delete user")
 		return
 	}
+	_ = s.store.AddEvent(r.Context(), store.Event{Level: "info", Kind: "user.deleted", ActorUserID: &current.User.ID, Message: "user deleted", MetadataJSON: metadataJSON(map[string]any{"userId": targetID, "email": target.Email}), CreatedAt: time.Now().UTC()})
 	writeJSON(w, 200, map[string]string{"status": "deleted"})
 }
 
@@ -637,6 +772,38 @@ func (s *Server) spaHandler(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	_, _ = w.Write([]byte(`<div id="app">CloudConv frontend has not been built. Run npm install && npm run build.</div>`))
 }
 
+func (s *Server) validateUserChange(ctx context.Context, actorID, targetID string, nextRole *string, nextDisabled *bool, deleting bool) error {
+	target, err := s.store.UserByID(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	if nextRole != nil && *nextRole != "admin" && *nextRole != "user" {
+		return errors.New("role must be admin or user")
+	}
+	if actorID == targetID {
+		if deleting {
+			return errors.New("you cannot delete your own account")
+		}
+		if nextDisabled != nil && *nextDisabled {
+			return errors.New("you cannot disable your own account")
+		}
+		if nextRole != nil && *nextRole != "admin" {
+			return errors.New("you cannot demote your own account")
+		}
+	}
+	removesEnabledAdmin := target.Role == "admin" && !target.Disabled && (deleting || (nextDisabled != nil && *nextDisabled) || (nextRole != nil && *nextRole != "admin"))
+	if removesEnabledAdmin {
+		count, err := s.store.ActiveEnabledAdminCount(ctx)
+		if err != nil {
+			return err
+		}
+		if count <= 1 {
+			return errors.New("at least one enabled admin account is required")
+		}
+	}
+	return nil
+}
+
 func readJSON(r *stdhttp.Request, dest any) error {
 	defer r.Body.Close()
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
@@ -645,6 +812,20 @@ func readJSON(r *stdhttp.Request, dest any) error {
 		return err
 	}
 	return nil
+}
+
+func readOptionalJSON(r *stdhttp.Request, dest any) error {
+	defer r.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dest)
 }
 
 func writeJSON(w stdhttp.ResponseWriter, status int, payload any) {
@@ -675,11 +856,23 @@ func statusForError(err error) int {
 		return 401
 	case strings.Contains(msg, "not accessible") || strings.Contains(msg, "invalid upload token") || strings.Contains(msg, "invalid job token"):
 		return 403
+	case errors.Is(err, store.ErrTerminalState) || strings.Contains(msg, "already terminal"):
+		return 409
 	case errors.Is(err, sql.ErrNoRows):
 		return 404
 	default:
 		return 400
 	}
+}
+
+func adminActionStatus(err error) int {
+	if errors.Is(err, sql.ErrNoRows) {
+		return 404
+	}
+	if errors.Is(err, store.ErrTerminalState) {
+		return 409
+	}
+	return 500
 }
 
 func queryLimit(r *stdhttp.Request, fallback int) int {
@@ -688,6 +881,28 @@ func queryLimit(r *stdhttp.Request, fallback int) int {
 		return fallback
 	}
 	return limit
+}
+
+func queryOffset(r *stdhttp.Request) int {
+	offset, err := strconv.Atoi(r.URL.Query().Get("offset"))
+	if err != nil || offset < 0 {
+		return 0
+	}
+	return offset
+}
+
+func queryBool(r *stdhttp.Request, key string) bool {
+	value, err := strconv.ParseBool(r.URL.Query().Get(key))
+	return err == nil && value
+}
+
+func metadataJSON(payload map[string]any) *string {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	out := string(data)
+	return &out
 }
 
 func sanitizeDownloadName(name string) string {

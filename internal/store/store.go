@@ -37,6 +37,51 @@ type Store struct {
 	db *sql.DB
 }
 
+var ErrTerminalState = errors.New("record is already terminal")
+
+const uploadSelectColumns = `id, owner_user_id, anonymous_token_hash, original_filename, source_path, media_type, detected_mime, size_bytes, bytes_received, chunk_size_bytes, chunk_count, status, ip_address, user_agent, created_at, updated_at, expires_at, canceled_at, canceled_by_user_id, artifacts_deleted_at, artifact_error, admin_note`
+
+const jobSelectColumns = `id, upload_id, owner_user_id, anonymous_token_hash, status, target_format, preset, options_json, progress_percentage, output_path, output_size_bytes, error_message, started_at, finished_at, created_at, updated_at, removed_at, removed_by_user_id, artifacts_deleted_at, artifact_error, admin_note`
+
+type AdminJobFilter struct {
+	Limit          int
+	Offset         int
+	Status         string
+	TargetFormat   string
+	UploadID       string
+	UserID         string
+	Query          string
+	IncludeRemoved bool
+}
+
+type AdminUploadFilter struct {
+	Limit     int
+	Offset    int
+	Status    string
+	MediaType string
+	UserID    string
+	Query     string
+}
+
+type AdminUserFilter struct {
+	Limit    int
+	Offset   int
+	Role     string
+	Disabled *bool
+	Query    string
+}
+
+type AdminEventFilter struct {
+	Limit    int
+	Offset   int
+	Level    string
+	Kind     string
+	JobID    string
+	UploadID string
+	UserID   string
+	Query    string
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
@@ -162,6 +207,26 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	for _, column := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"jobs", "removed_at", "removed_at TEXT NULL"},
+		{"jobs", "removed_by_user_id", "removed_by_user_id TEXT NULL"},
+		{"jobs", "artifacts_deleted_at", "artifacts_deleted_at TEXT NULL"},
+		{"jobs", "artifact_error", "artifact_error TEXT NULL"},
+		{"jobs", "admin_note", "admin_note TEXT NULL"},
+		{"uploads", "canceled_at", "canceled_at TEXT NULL"},
+		{"uploads", "canceled_by_user_id", "canceled_by_user_id TEXT NULL"},
+		{"uploads", "artifacts_deleted_at", "artifacts_deleted_at TEXT NULL"},
+		{"uploads", "artifact_error", "artifact_error TEXT NULL"},
+		{"uploads", "admin_note", "admin_note TEXT NULL"},
+	} {
+		if err := s.addColumnIfMissing(ctx, column.table, column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	now := nowString()
 	for key, value := range DefaultSettings {
 		if _, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO settings(key, value, updated_at) VALUES(?, ?, ?)`, key, value, now); err != nil {
@@ -169,6 +234,32 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN `+definition)
+	return err
 }
 
 func (s *Store) Settings(ctx context.Context) (map[string]string, error) {
@@ -267,6 +358,45 @@ func (s *Store) ListUsers(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
+func (s *Store) ListUsersFiltered(ctx context.Context, filter AdminUserFilter) ([]User, int, error) {
+	limit, offset := normalizeLimitOffset(filter.Limit, filter.Offset)
+	where := []string{"1=1"}
+	args := make([]any, 0)
+	if filter.Role != "" {
+		where = append(where, "role = ?")
+		args = append(args, filter.Role)
+	}
+	if filter.Disabled != nil {
+		where = append(where, "disabled = ?")
+		args = append(args, boolInt(*filter.Disabled))
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		q := "%" + strings.ToLower(strings.TrimSpace(filter.Query)) + "%"
+		where = append(where, "(LOWER(email) LIKE ? OR LOWER(id) LIKE ?)")
+		args = append(args, q, q)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, email, password_hash, role, disabled, created_at, updated_at, last_login_at FROM users WHERE `+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	users := make([]User, 0)
+	for rows.Next() {
+		u, err := scanUserRows(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		users = append(users, *u)
+	}
+	return users, total, rows.Err()
+}
+
 func (s *Store) UpdateUser(ctx context.Context, id string, fields map[string]any) error {
 	if len(fields) == 0 {
 		return nil
@@ -300,6 +430,12 @@ func (s *Store) UpdateUser(ctx context.Context, id string, fields map[string]any
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	return err
+}
+
+func (s *Store) ActiveEnabledAdminCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0`).Scan(&count)
+	return count, err
 }
 
 func (s *Store) MarkLogin(ctx context.Context, id string) error {
@@ -354,12 +490,12 @@ func (s *Store) CreateUpload(ctx context.Context, upload Upload) error {
 }
 
 func (s *Store) UploadByID(ctx context.Context, id string) (*Upload, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, owner_user_id, anonymous_token_hash, original_filename, source_path, media_type, detected_mime, size_bytes, bytes_received, chunk_size_bytes, chunk_count, status, ip_address, user_agent, created_at, updated_at, expires_at FROM uploads WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+uploadSelectColumns+` FROM uploads WHERE id = ?`, id)
 	return scanUpload(row)
 }
 
 func (s *Store) ListUploads(ctx context.Context, limit int) ([]Upload, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_user_id, anonymous_token_hash, original_filename, source_path, media_type, detected_mime, size_bytes, bytes_received, chunk_size_bytes, chunk_count, status, ip_address, user_agent, created_at, updated_at, expires_at FROM uploads ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+uploadSelectColumns+` FROM uploads ORDER BY created_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -373,6 +509,49 @@ func (s *Store) ListUploads(ctx context.Context, limit int) ([]Upload, error) {
 		out = append(out, *u)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListUploadsFiltered(ctx context.Context, filter AdminUploadFilter) ([]Upload, int, error) {
+	limit, offset := normalizeLimitOffset(filter.Limit, filter.Offset)
+	where := []string{"1=1"}
+	args := make([]any, 0)
+	if filter.Status != "" {
+		where = append(where, "status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.MediaType != "" {
+		where = append(where, "media_type = ?")
+		args = append(args, filter.MediaType)
+	}
+	if filter.UserID != "" {
+		where = append(where, "owner_user_id = ?")
+		args = append(args, filter.UserID)
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		q := "%" + strings.ToLower(strings.TrimSpace(filter.Query)) + "%"
+		where = append(where, "(LOWER(id) LIKE ? OR LOWER(original_filename) LIKE ? OR LOWER(COALESCE(ip_address, '')) LIKE ?)")
+		args = append(args, q, q, q)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM uploads WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+uploadSelectColumns+` FROM uploads WHERE `+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Upload, 0)
+	for rows.Next() {
+		u, err := scanUploadRows(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *u)
+	}
+	return out, total, rows.Err()
 }
 
 func (s *Store) UpdateUploadChunk(ctx context.Context, uploadID string, chunk UploadChunk) error {
@@ -467,12 +646,96 @@ func (s *Store) CreateJob(ctx context.Context, job Job) error {
 }
 
 func (s *Store) JobByID(ctx context.Context, id string) (*Job, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, upload_id, owner_user_id, anonymous_token_hash, status, target_format, preset, options_json, progress_percentage, output_path, output_size_bytes, error_message, started_at, finished_at, created_at, updated_at FROM jobs WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id)
 	return scanJob(row)
 }
 
 func (s *Store) ListJobs(ctx context.Context, limit int) ([]Job, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, upload_id, owner_user_id, anonymous_token_hash, status, target_format, preset, options_json, progress_percentage, output_path, output_size_bytes, error_message, started_at, finished_at, created_at, updated_at FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Job, 0)
+	for rows.Next() {
+		j, err := scanJobRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *j)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ListJobsFiltered(ctx context.Context, filter AdminJobFilter) ([]Job, int, error) {
+	limit, offset := normalizeLimitOffset(filter.Limit, filter.Offset)
+	where := []string{"1=1"}
+	args := make([]any, 0)
+	if !filter.IncludeRemoved {
+		where = append(where, "j.status <> 'removed'")
+	}
+	if filter.Status != "" {
+		where = append(where, "j.status = ?")
+		args = append(args, filter.Status)
+	}
+	if filter.TargetFormat != "" {
+		where = append(where, "j.target_format = ?")
+		args = append(args, filter.TargetFormat)
+	}
+	if filter.UploadID != "" {
+		where = append(where, "j.upload_id = ?")
+		args = append(args, filter.UploadID)
+	}
+	if filter.UserID != "" {
+		where = append(where, "j.owner_user_id = ?")
+		args = append(args, filter.UserID)
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		q := "%" + strings.ToLower(strings.TrimSpace(filter.Query)) + "%"
+		where = append(where, "(LOWER(j.id) LIKE ? OR LOWER(j.upload_id) LIKE ? OR LOWER(COALESCE(u.original_filename, '')) LIKE ?)")
+		args = append(args, q, q, q)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs j LEFT JOIN uploads u ON u.id = j.upload_id WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+prefixColumns("j", jobSelectColumns)+` FROM jobs j LEFT JOIN uploads u ON u.id = j.upload_id WHERE `+whereSQL+` ORDER BY j.created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Job, 0)
+	for rows.Next() {
+		j, err := scanJobRows(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *j)
+	}
+	return out, total, rows.Err()
+}
+
+func (s *Store) JobsByUploadID(ctx context.Context, uploadID string) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE upload_id = ? ORDER BY created_at DESC`, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Job, 0)
+	for rows.Next() {
+		j, err := scanJobRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *j)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) NonRemovedActiveJobsByUploadID(ctx context.Context, uploadID string) ([]Job, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE upload_id = ? AND status IN ('queued','converting') ORDER BY created_at DESC`, uploadID)
 	if err != nil {
 		return nil, err
 	}
@@ -521,20 +784,101 @@ func (s *Store) UpdateJobProgress(ctx context.Context, id string, progress int) 
 
 func (s *Store) FinishJob(ctx context.Context, id, outputPath string, size int64) error {
 	now := nowString()
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'finished', progress_percentage = 100, output_path = ?, output_size_bytes = ?, finished_at = ?, updated_at = ? WHERE id = ?`, outputPath, size, now, now, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'finished', progress_percentage = 100, output_path = ?, output_size_bytes = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'converting'`, outputPath, size, now, now, id)
 	return err
 }
 
 func (s *Store) FailJob(ctx context.Context, id, message string) error {
 	now := nowString()
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'error', error_message = ?, finished_at = ?, updated_at = ? WHERE id = ?`, message, now, now, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'error', error_message = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','converting')`, message, now, now, id)
 	return err
 }
 
 func (s *Store) CancelJob(ctx context.Context, id string) error {
 	now := nowString()
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'canceled', finished_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','converting')`, now, now, id)
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'canceled', finished_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','converting')`, now, now, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		return nil
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, id).Scan(&status); err != nil {
+		return err
+	}
+	return ErrTerminalState
+}
+
+func (s *Store) CancelJobForAdmin(ctx context.Context, jobID, adminID, note string, artifactError *string) (*Job, error) {
+	now := nowString()
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'canceled', finished_at = ?, updated_at = ?, artifact_error = ?, admin_note = ? WHERE id = ? AND status IN ('queued','converting')`,
+		now, now, nullableStringPtr(artifactError), nullableNote(note), jobID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected != 1 {
+		var status string
+		if err := s.db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&status); err != nil {
+			return nil, err
+		}
+		return nil, ErrTerminalState
+	}
+	return s.JobByID(ctx, jobID)
+}
+
+func (s *Store) MarkJobRemoved(ctx context.Context, jobID, adminID, note string, artifactError *string) (*Job, error) {
+	now := nowString()
+	var deletedAt any
+	if artifactError == nil {
+		deletedAt = now
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE jobs SET status = 'removed', removed_at = ?, removed_by_user_id = ?, artifacts_deleted_at = ?, artifact_error = ?, admin_note = ?, finished_at = COALESCE(finished_at, ?), updated_at = ? WHERE id = ? AND status <> 'removed'`,
+		now, adminID, deletedAt, nullableStringPtr(artifactError), nullableNote(note), now, now, jobID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected != 1 {
+		var status string
+		if err := s.db.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&status); err != nil {
+			return nil, err
+		}
+		return nil, ErrTerminalState
+	}
+	return s.JobByID(ctx, jobID)
+}
+
+func (s *Store) CancelUploadForAdmin(ctx context.Context, uploadID, adminID, note string, artifactError *string) (*Upload, error) {
+	now := nowString()
+	var deletedAt any
+	if artifactError == nil {
+		deletedAt = now
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE uploads SET status = 'canceled', canceled_at = ?, canceled_by_user_id = ?, artifacts_deleted_at = ?, artifact_error = ?, admin_note = ?, updated_at = ? WHERE id = ?`,
+		now, adminID, deletedAt, nullableStringPtr(artifactError), nullableNote(note), now, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected != 1 {
+		return nil, sql.ErrNoRows
+	}
+	return s.UploadByID(ctx, uploadID)
 }
 
 func (s *Store) QueuePosition(ctx context.Context, id string) (int, error) {
@@ -621,6 +965,66 @@ func (s *Store) ListEvents(ctx context.Context, limit int) ([]Event, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) ListEventsFiltered(ctx context.Context, filter AdminEventFilter) ([]Event, int, error) {
+	limit, offset := normalizeLimitOffset(filter.Limit, filter.Offset)
+	where := []string{"1=1"}
+	args := make([]any, 0)
+	if filter.Level != "" {
+		where = append(where, "level = ?")
+		args = append(args, filter.Level)
+	}
+	if filter.Kind != "" {
+		where = append(where, "kind = ?")
+		args = append(args, filter.Kind)
+	}
+	if filter.JobID != "" {
+		where = append(where, "job_id = ?")
+		args = append(args, filter.JobID)
+	}
+	if filter.UploadID != "" {
+		where = append(where, "upload_id = ?")
+		args = append(args, filter.UploadID)
+	}
+	if filter.UserID != "" {
+		where = append(where, "actor_user_id = ?")
+		args = append(args, filter.UserID)
+	}
+	if strings.TrimSpace(filter.Query) != "" {
+		q := "%" + strings.ToLower(strings.TrimSpace(filter.Query)) + "%"
+		where = append(where, "(LOWER(message) LIKE ? OR LOWER(kind) LIKE ? OR LOWER(COALESCE(metadata_json, '')) LIKE ?)")
+		args = append(args, q, q, q)
+	}
+	whereSQL := strings.Join(where, " AND ")
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE `+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, level, kind, actor_user_id, upload_id, job_id, message, metadata_json, ip_address, user_agent, created_at FROM events WHERE `+whereSQL+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Event, 0)
+	for rows.Next() {
+		var e Event
+		var actor, uploadID, jobID, metadata, ip, ua sql.NullString
+		var created string
+		if err := rows.Scan(&e.ID, &e.Level, &e.Kind, &actor, &uploadID, &jobID, &e.Message, &metadata, &ip, &ua, &created); err != nil {
+			return nil, 0, err
+		}
+		e.ActorUserID = nullablePtr(actor)
+		e.UploadID = nullablePtr(uploadID)
+		e.JobID = nullablePtr(jobID)
+		e.MetadataJSON = nullablePtr(metadata)
+		e.IPAddress = nullablePtr(ip)
+		e.UserAgent = nullablePtr(ua)
+		e.CreatedAt = parseTime(created)
+		out = append(out, e)
+	}
+	return out, total, rows.Err()
+}
+
 func (s *Store) Summary(ctx context.Context) (map[string]any, error) {
 	out := make(map[string]any)
 	for _, status := range []string{"queued", "converting", "finished", "error", "canceled"} {
@@ -648,7 +1052,8 @@ func (s *Store) Summary(ctx context.Context) (map[string]any, error) {
 }
 
 func (s *Store) CancelInactiveUploads(ctx context.Context, cutoff time.Time) ([]Upload, error) {
-	rows, err := s.db.QueryContext(ctx, `UPDATE uploads SET status = 'canceled', updated_at = ? WHERE status = 'uploading' AND updated_at < ? RETURNING id, owner_user_id, anonymous_token_hash, original_filename, source_path, media_type, detected_mime, size_bytes, bytes_received, chunk_size_bytes, chunk_count, status, ip_address, user_agent, created_at, updated_at, expires_at`, nowString(), formatTime(cutoff))
+	now := nowString()
+	rows, err := s.db.QueryContext(ctx, `UPDATE uploads SET status = 'canceled', canceled_at = ?, updated_at = ? WHERE status = 'uploading' AND updated_at < ? RETURNING `+uploadSelectColumns, now, now, formatTime(cutoff))
 	if err != nil {
 		return nil, err
 	}
@@ -723,6 +1128,14 @@ func nullableStringPtr(s *string) any {
 	return *s
 }
 
+func nullableNote(note string) any {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return nil
+	}
+	return note
+}
+
 func nullableInt64Ptr(v *int64) any {
 	if v == nil {
 		return nil
@@ -742,6 +1155,24 @@ func boolInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func normalizeLimitOffset(limit, offset int) (int, int) {
+	if limit <= 0 || limit > 1000 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return limit, offset
+}
+
+func prefixColumns(prefix, columns string) string {
+	parts := strings.Split(columns, ",")
+	for i, part := range parts {
+		parts[i] = prefix + "." + strings.TrimSpace(part)
+	}
+	return strings.Join(parts, ", ")
 }
 
 type userScanner interface {
@@ -771,9 +1202,10 @@ type uploadScanner interface {
 
 func scanUpload(row uploadScanner) (*Upload, error) {
 	var u Upload
-	var owner, anon, source, mediaType, mime sql.NullString
+	var owner, anon, source, mediaType, mime, canceledBy, artifactError, adminNote sql.NullString
 	var created, updated, expires string
-	if err := row.Scan(&u.ID, &owner, &anon, &u.OriginalFilename, &source, &mediaType, &mime, &u.SizeBytes, &u.BytesReceived, &u.ChunkSizeBytes, &u.ChunkCount, &u.Status, &u.IPAddress, &u.UserAgent, &created, &updated, &expires); err != nil {
+	var canceledAt, artifactsDeletedAt sql.NullString
+	if err := row.Scan(&u.ID, &owner, &anon, &u.OriginalFilename, &source, &mediaType, &mime, &u.SizeBytes, &u.BytesReceived, &u.ChunkSizeBytes, &u.ChunkCount, &u.Status, &u.IPAddress, &u.UserAgent, &created, &updated, &expires, &canceledAt, &canceledBy, &artifactsDeletedAt, &artifactError, &adminNote); err != nil {
 		return nil, err
 	}
 	u.OwnerUserID = nullablePtr(owner)
@@ -784,6 +1216,11 @@ func scanUpload(row uploadScanner) (*Upload, error) {
 	u.CreatedAt = parseTime(created)
 	u.UpdatedAt = parseTime(updated)
 	u.ExpiresAt = parseTime(expires)
+	u.CanceledAt = parseNullableTime(canceledAt)
+	u.CanceledByUserID = nullablePtr(canceledBy)
+	u.ArtifactsDeletedAt = parseNullableTime(artifactsDeletedAt)
+	u.ArtifactError = nullablePtr(artifactError)
+	u.AdminNote = nullablePtr(adminNote)
 	return &u, nil
 }
 
@@ -797,10 +1234,10 @@ type jobScanner interface {
 
 func scanJob(row jobScanner) (*Job, error) {
 	var j Job
-	var owner, anon, output, errMsg sql.NullString
+	var owner, anon, output, errMsg, removedBy, artifactError, adminNote sql.NullString
 	var size sql.NullInt64
-	var started, finished, created, updated sql.NullString
-	if err := row.Scan(&j.ID, &j.UploadID, &owner, &anon, &j.Status, &j.TargetFormat, &j.Preset, &j.OptionsJSON, &j.ProgressPercentage, &output, &size, &errMsg, &started, &finished, &created, &updated); err != nil {
+	var started, finished, created, updated, removedAt, artifactsDeletedAt sql.NullString
+	if err := row.Scan(&j.ID, &j.UploadID, &owner, &anon, &j.Status, &j.TargetFormat, &j.Preset, &j.OptionsJSON, &j.ProgressPercentage, &output, &size, &errMsg, &started, &finished, &created, &updated, &removedAt, &removedBy, &artifactsDeletedAt, &artifactError, &adminNote); err != nil {
 		return nil, err
 	}
 	j.OwnerUserID = nullablePtr(owner)
@@ -818,6 +1255,11 @@ func scanJob(row jobScanner) (*Job, error) {
 	if updated.Valid {
 		j.UpdatedAt = parseTime(updated.String)
 	}
+	j.RemovedAt = parseNullableTime(removedAt)
+	j.RemovedByUserID = nullablePtr(removedBy)
+	j.ArtifactsDeletedAt = parseNullableTime(artifactsDeletedAt)
+	j.ArtifactError = nullablePtr(artifactError)
+	j.AdminNote = nullablePtr(adminNote)
 	return &j, nil
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/kirari04/cloudconv/internal/config"
 	apphttp "github.com/kirari04/cloudconv/internal/http"
 	"github.com/kirari04/cloudconv/internal/jobs"
+	"github.com/kirari04/cloudconv/internal/media"
 	"github.com/kirari04/cloudconv/internal/store"
 	"github.com/kirari04/cloudconv/internal/uploads"
 )
@@ -29,6 +30,7 @@ type testApp struct {
 	client *http.Client
 	cancel context.CancelFunc
 	store  *store.Store
+	cfg    config.Config
 }
 
 func newTestApp(t *testing.T) *testApp {
@@ -68,6 +70,7 @@ func newTestApp(t *testing.T) *testApp {
 		client: &http.Client{Jar: jar},
 		cancel: cancel,
 		store:  st,
+		cfg:    cfg,
 	}
 	t.Cleanup(func() {
 		app.server.Close()
@@ -232,6 +235,177 @@ func TestAuthenticatedChunkUploadUsesCSRF(t *testing.T) {
 	resp.Body.Close()
 }
 
+func TestConfigExposesAvailableContainerCodecs(t *testing.T) {
+	tests := []struct {
+		name       string
+		encoders   map[string]bool
+		wantAV1    bool
+		wantAV1Enc string
+		wantCount  int
+	}{
+		{
+			name: "svt av1 preferred",
+			encoders: map[string]bool{
+				"libx264":    true,
+				"libx265":    true,
+				"libsvtav1":  true,
+				"librav1e":   true,
+				"libaom-av1": true,
+				"libvpx-vp9": true,
+				"aac":        true,
+				"libopus":    true,
+			},
+			wantAV1:    true,
+			wantAV1Enc: "libsvtav1",
+			wantCount:  3,
+		},
+		{
+			name: "aom av1 fallback",
+			encoders: map[string]bool{
+				"libx264":    true,
+				"libaom-av1": true,
+				"aac":        true,
+			},
+			wantAV1:    true,
+			wantAV1Enc: "libaom-av1",
+			wantCount:  2,
+		},
+		{
+			name: "av1 hidden when unavailable",
+			encoders: map[string]bool{
+				"libx264": true,
+				"libx265": true,
+				"aac":     true,
+			},
+			wantAV1:   false,
+			wantCount: 2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restore := media.SetAvailableEncodersForTest(tt.encoders)
+			defer restore()
+			app := newTestApp(t)
+
+			config := app.decodeJSON(t, app.doJSON(t, "GET", "/api/config", nil, ""))
+			catalog := config["catalog"].(map[string]any)
+			presetDetails := catalog["presetDetails"].([]any)
+			if len(presetDetails) != 3 {
+				t.Fatalf("expected presetDetails for three presets, got %#v", presetDetails)
+			}
+			balanced := findPresetDetail(t, presetDetails, "balanced")
+			effects := balanced["effects"].(map[string]any)
+			videoEffect := effects["video"].(map[string]any)
+			values := videoEffect["values"].(map[string]any)
+			if values["maxHeight"] != float64(720) {
+				t.Fatalf("expected balanced video maxHeight 720, got %#v", values)
+			}
+			formats := catalog["formats"].([]any)
+			mp4 := findFormat(t, formats, "mp4")
+			videoCodecs := mp4["videoCodecs"].([]any)
+			if len(videoCodecs) != tt.wantCount {
+				t.Fatalf("expected %d mp4 codecs, got %#v", tt.wantCount, videoCodecs)
+			}
+			av1 := findCodec(videoCodecs, "av1")
+			if tt.wantAV1 {
+				if av1 == nil {
+					t.Fatalf("expected AV1 codec in %#v", videoCodecs)
+				}
+				if av1["encoder"] != tt.wantAV1Enc {
+					t.Fatalf("expected AV1 encoder %s, got %#v", tt.wantAV1Enc, av1)
+				}
+			} else if av1 != nil {
+				t.Fatalf("expected AV1 to be omitted, got %#v", av1)
+			}
+			gif := findFormat(t, formats, "gif")
+			if _, ok := gif["videoCodecs"]; ok {
+				t.Fatalf("expected gif to omit videoCodecs, got %#v", gif["videoCodecs"])
+			}
+			mp3 := findFormat(t, formats, "mp3")
+			if _, ok := mp3["audioCodecs"]; ok {
+				t.Fatalf("expected audio-only format to omit audioCodecs, got %#v", mp3["audioCodecs"])
+			}
+		})
+	}
+}
+
+func TestJobCreateStoresEffectiveAV1Encoder(t *testing.T) {
+	restore := media.SetAvailableEncodersForTest(map[string]bool{
+		"libsvtav1":  true,
+		"librav1e":   true,
+		"libaom-av1": true,
+		"aac":        true,
+	})
+	defer restore()
+
+	ctx := context.Background()
+	root := t.TempDir()
+	cfg := config.Config{
+		DBPath:       filepath.Join(root, "cloudconv.db"),
+		UploadDir:    filepath.Join(root, "uploads"),
+		ConvertedDir: filepath.Join(root, "converted"),
+	}
+	st, err := store.Open(ctx, cfg.DBPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	sourcePath := filepath.Join(cfg.UploadDir, "av1-upload", "source.mp4")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("source"), 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	mediaType := "video"
+	now := time.Now().UTC()
+	upload := store.Upload{
+		ID:               "av1-upload",
+		OriginalFilename: "clip.mp4",
+		SourcePath:       &sourcePath,
+		MediaType:        &mediaType,
+		SizeBytes:        6,
+		BytesReceived:    6,
+		ChunkSizeBytes:   1024,
+		ChunkCount:       1,
+		Status:           "complete",
+		IPAddress:        "127.0.0.1",
+		UserAgent:        "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ExpiresAt:        now.Add(time.Hour),
+	}
+	if err := st.CreateUpload(ctx, upload); err != nil {
+		t.Fatalf("create upload: %v", err)
+	}
+
+	jobSvc := jobs.New(cfg, st)
+	job, _, err := jobSvc.Create(ctx, &upload, "mp4", "balanced", media.Options{
+		VideoCodec:            "av1",
+		AudioCodec:            "aac",
+		EffectiveVideoEncoder: "libaom-av1",
+		EffectiveAudioEncoder: "spoofed",
+	})
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	stored, err := st.JobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	opts := media.DecodeOptions(stored.OptionsJSON)
+	if opts.VideoCodec != "av1" || opts.AudioCodec != "aac" {
+		t.Fatalf("expected stored codec ids, got %#v", opts)
+	}
+	if opts.EffectiveVideoEncoder != "libsvtav1" {
+		t.Fatalf("expected effective AV1 encoder libsvtav1, got %#v", opts)
+	}
+	if opts.EffectiveAudioEncoder != "aac" {
+		t.Fatalf("expected effective audio encoder aac, got %#v", opts)
+	}
+}
+
 func TestChunkedUploadConversionAndDownload(t *testing.T) {
 	app := newTestApp(t)
 	data, err := os.ReadFile("testdata/test5.png")
@@ -302,6 +476,315 @@ func TestLegacyMultipartEndpointStillQueuesJob(t *testing.T) {
 	if final["status"] != "finished" {
 		t.Fatalf("expected finished legacy job, got %#v", final)
 	}
+}
+
+func TestAdminCanCancelUploadAndArtifacts(t *testing.T) {
+	app := newTestApp(t)
+	csrf, adminID := setupAdmin(t, app)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	uploadID := "upload-cancel-test"
+	sourcePath := filepath.Join(app.cfg.UploadDir, uploadID, "source.png")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("source"), 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	chunkDir := filepath.Join(app.cfg.UploadDir, uploadID, "chunks")
+	if err := os.MkdirAll(chunkDir, 0755); err != nil {
+		t.Fatalf("mkdir chunks: %v", err)
+	}
+	chunkPath := filepath.Join(chunkDir, "000000.part")
+	if err := os.WriteFile(chunkPath, []byte("chunk"), 0644); err != nil {
+		t.Fatalf("write chunk: %v", err)
+	}
+	upload := store.Upload{
+		ID:               uploadID,
+		OriginalFilename: "cancel-me.png",
+		SourcePath:       &sourcePath,
+		SizeBytes:        6,
+		BytesReceived:    5,
+		ChunkSizeBytes:   1024,
+		ChunkCount:       1,
+		Status:           "uploading",
+		IPAddress:        "127.0.0.1",
+		UserAgent:        "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ExpiresAt:        now.Add(time.Hour),
+	}
+	if err := app.store.CreateUpload(ctx, upload); err != nil {
+		t.Fatalf("create upload: %v", err)
+	}
+	job := store.Job{
+		ID:           "queued-cancel-test",
+		UploadID:     uploadID,
+		Status:       "queued",
+		TargetFormat: "jpg",
+		Preset:       "balanced",
+		OptionsJSON:  "{}",
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := app.store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	resp := app.doJSON(t, "POST", "/api/admin/uploads/"+uploadID+"/cancel", map[string]any{"note": "cleanup"}, csrf)
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	updated, err := app.store.UploadByID(ctx, uploadID)
+	if err != nil {
+		t.Fatalf("load upload: %v", err)
+	}
+	if updated.Status != "canceled" || updated.CanceledByUserID == nil || *updated.CanceledByUserID != adminID {
+		t.Fatalf("expected upload canceled by admin, got %#v", updated)
+	}
+	updatedJob, err := app.store.JobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if updatedJob.Status != "canceled" {
+		t.Fatalf("expected related queued job canceled, got %s", updatedJob.Status)
+	}
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("expected source artifact removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(chunkDir); !os.IsNotExist(err) {
+		t.Fatalf("expected chunk directory removed, stat err=%v", err)
+	}
+	events, total, err := app.store.ListEventsFiltered(ctx, store.AdminEventFilter{Kind: "upload.canceled", Limit: 10})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if total == 0 || len(events) == 0 {
+		t.Fatal("expected upload.canceled event")
+	}
+}
+
+func TestAdminRemoveJobDeletesArtifactAndHidesByDefault(t *testing.T) {
+	app := newTestApp(t)
+	csrf, adminID := setupAdmin(t, app)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	sourcePath := filepath.Join(app.cfg.UploadDir, "remove-upload-test", "source.png")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0755); err != nil {
+		t.Fatalf("mkdir source: %v", err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("source"), 0644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	upload := store.Upload{
+		ID:               "remove-upload-test",
+		OriginalFilename: "remove-me.png",
+		SourcePath:       &sourcePath,
+		SizeBytes:        6,
+		BytesReceived:    6,
+		ChunkSizeBytes:   1024,
+		ChunkCount:       1,
+		Status:           "complete",
+		IPAddress:        "127.0.0.1",
+		UserAgent:        "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ExpiresAt:        now.Add(time.Hour),
+	}
+	if err := app.store.CreateUpload(ctx, upload); err != nil {
+		t.Fatalf("create upload: %v", err)
+	}
+	if err := os.MkdirAll(app.cfg.ConvertedDir, 0755); err != nil {
+		t.Fatalf("mkdir converted: %v", err)
+	}
+	outputPath := filepath.Join(app.cfg.ConvertedDir, "remove-job-test.jpg")
+	if err := os.WriteFile(outputPath, []byte("output"), 0644); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+	outputSize := int64(6)
+	finished := now.Add(time.Minute)
+	job := store.Job{
+		ID:              "remove-job-test",
+		UploadID:        upload.ID,
+		Status:          "finished",
+		TargetFormat:    "jpg",
+		Preset:          "balanced",
+		OptionsJSON:     "{}",
+		OutputPath:      &outputPath,
+		OutputSizeBytes: &outputSize,
+		FinishedAt:      &finished,
+		CreatedAt:       now,
+		UpdatedAt:       finished,
+	}
+	if err := app.store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	resp := app.doJSON(t, "DELETE", "/api/admin/jobs/"+job.ID, map[string]any{"note": "remove artifact"}, csrf)
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	updated, err := app.store.JobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("load job: %v", err)
+	}
+	if updated.Status != "removed" || updated.RemovedByUserID == nil || *updated.RemovedByUserID != adminID {
+		t.Fatalf("expected removed job by admin, got %#v", updated)
+	}
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Fatalf("expected output artifact removed, stat err=%v", err)
+	}
+	defaultList := app.decodeJSON(t, app.doJSON(t, "GET", "/api/admin/jobs?limit=50", nil, csrf))
+	if len(defaultList["jobs"].([]any)) != 0 {
+		t.Fatalf("expected removed job hidden by default, got %#v", defaultList["jobs"])
+	}
+	removedList := app.decodeJSON(t, app.doJSON(t, "GET", "/api/admin/jobs?includeRemoved=true&limit=50", nil, csrf))
+	if len(removedList["jobs"].([]any)) == 0 {
+		t.Fatal("expected removed job visible with includeRemoved")
+	}
+}
+
+func TestAdminUserSelfLockoutProtections(t *testing.T) {
+	app := newTestApp(t)
+	csrf, adminID := setupAdmin(t, app)
+
+	resp := app.doJSON(t, "PATCH", "/api/admin/users/"+adminID, map[string]any{"disabled": true}, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected self-disable rejected, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = app.doJSON(t, "PATCH", "/api/admin/users/"+adminID, map[string]any{"role": "user"}, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected self-demote rejected, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = app.doJSON(t, "DELETE", "/api/admin/users/"+adminID, map[string]any{}, csrf)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected self-delete rejected, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	created := app.decodeJSON(t, app.doJSON(t, "POST", "/api/admin/users", map[string]any{
+		"email":    "user@example.com",
+		"password": "temporary123",
+		"role":     "user",
+	}, csrf))
+	user := created["user"].(map[string]any)
+	reset := app.decodeJSON(t, app.doJSON(t, "POST", "/api/admin/users/"+user["id"].(string)+"/reset-password", map[string]any{}, csrf))
+	password := reset["password"].(string)
+	resp = app.doJSON(t, "POST", "/api/auth/login", map[string]any{
+		"email":    "user@example.com",
+		"password": password,
+	}, "")
+	assertStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+}
+
+func TestPublicJobStatusHidesConverterDetails(t *testing.T) {
+	app := newTestApp(t)
+	csrf, _ := setupAdmin(t, app)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	upload := store.Upload{
+		ID:               "failed-upload-test",
+		OriginalFilename: "bad-video.mp4",
+		SizeBytes:        10,
+		BytesReceived:    10,
+		ChunkSizeBytes:   10,
+		ChunkCount:       1,
+		Status:           "complete",
+		IPAddress:        "127.0.0.1",
+		UserAgent:        "test",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		ExpiresAt:        now.Add(time.Hour),
+	}
+	if err := app.store.CreateUpload(ctx, upload); err != nil {
+		t.Fatalf("create upload: %v", err)
+	}
+	details := "conversion failed: ffmpeg exited with exit code 1: private codec details"
+	job := store.Job{
+		ID:           "failed-job-test",
+		UploadID:     upload.ID,
+		Status:       "error",
+		TargetFormat: "mp4",
+		Preset:       "balanced",
+		OptionsJSON:  "{}",
+		ErrorMessage: &details,
+		FinishedAt:   &now,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+	if err := app.store.CreateJob(ctx, job); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	public := app.decodeJSON(t, app.doJSON(t, "GET", "/api/jobs/"+job.ID, nil, csrf))
+	if public["error"] != "Conversion failed." {
+		t.Fatalf("expected sanitized public error, got %#v", public["error"])
+	}
+	admin := app.decodeJSON(t, app.doJSON(t, "GET", "/api/admin/jobs?status=error&includeRemoved=true", nil, csrf))
+	jobs := admin["jobs"].([]any)
+	if len(jobs) != 1 {
+		t.Fatalf("expected one admin job, got %#v", jobs)
+	}
+	raw := jobs[0].(map[string]any)["error"]
+	if raw != details {
+		t.Fatalf("expected raw admin error, got %#v", raw)
+	}
+}
+
+func setupAdmin(t *testing.T, app *testApp) (string, string) {
+	t.Helper()
+	resp := app.doJSON(t, "POST", "/api/setup", map[string]any{
+		"email":      "admin@example.com",
+		"password":   "password123",
+		"setupToken": "test-setup-token",
+	}, "")
+	assertStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+	login := app.decodeJSON(t, app.doJSON(t, "POST", "/api/auth/login", map[string]any{
+		"email":    "admin@example.com",
+		"password": "password123",
+	}, ""))
+	user := login["user"].(map[string]any)
+	return login["csrfToken"].(string), user["id"].(string)
+}
+
+func findFormat(t *testing.T, formats []any, id string) map[string]any {
+	t.Helper()
+	for _, item := range formats {
+		format := item.(map[string]any)
+		if format["id"] == id {
+			return format
+		}
+	}
+	t.Fatalf("format %s not found in %#v", id, formats)
+	return nil
+}
+
+func findPresetDetail(t *testing.T, details []any, id string) map[string]any {
+	t.Helper()
+	for _, item := range details {
+		detail := item.(map[string]any)
+		if detail["id"] == id {
+			return detail
+		}
+	}
+	t.Fatalf("preset detail %s not found in %#v", id, details)
+	return nil
+}
+
+func findCodec(codecs []any, id string) map[string]any {
+	for _, item := range codecs {
+		codec := item.(map[string]any)
+		if codec["id"] == id {
+			return codec
+		}
+	}
+	return nil
 }
 
 func (app *testApp) doJSON(t *testing.T, method, path string, payload any, csrf string) *http.Response {

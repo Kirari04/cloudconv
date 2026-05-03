@@ -25,23 +25,28 @@ type Session struct {
 }
 
 type Upload struct {
-	ID                 string    `json:"id"`
-	OwnerUserID        *string   `json:"ownerUserId,omitempty"`
-	AnonymousTokenHash *string   `json:"-"`
-	OriginalFilename   string    `json:"originalFilename"`
-	SourcePath         *string   `json:"sourcePath,omitempty"`
-	MediaType          *string   `json:"mediaType,omitempty"`
-	DetectedMIME       *string   `json:"detectedMime,omitempty"`
-	SizeBytes          int64     `json:"sizeBytes"`
-	BytesReceived      int64     `json:"bytesReceived"`
-	ChunkSizeBytes     int64     `json:"chunkSizeBytes"`
-	ChunkCount         int       `json:"chunkCount"`
-	Status             string    `json:"status"`
-	IPAddress          string    `json:"ipAddress"`
-	UserAgent          string    `json:"userAgent"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
-	ExpiresAt          time.Time `json:"expiresAt"`
+	ID                 string     `json:"id"`
+	OwnerUserID        *string    `json:"ownerUserId,omitempty"`
+	AnonymousTokenHash *string    `json:"-"`
+	OriginalFilename   string     `json:"originalFilename"`
+	SourcePath         *string    `json:"sourcePath,omitempty"`
+	MediaType          *string    `json:"mediaType,omitempty"`
+	DetectedMIME       *string    `json:"detectedMime,omitempty"`
+	SizeBytes          int64      `json:"sizeBytes"`
+	BytesReceived      int64      `json:"bytesReceived"`
+	ChunkSizeBytes     int64      `json:"chunkSizeBytes"`
+	ChunkCount         int        `json:"chunkCount"`
+	Status             string     `json:"status"`
+	IPAddress          string     `json:"ipAddress"`
+	UserAgent          string     `json:"userAgent"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
+	ExpiresAt          time.Time  `json:"expiresAt"`
+	CanceledAt         *time.Time `json:"canceledAt,omitempty"`
+	CanceledByUserID   *string    `json:"canceledByUserId,omitempty"`
+	ArtifactsDeletedAt *time.Time `json:"artifactsDeletedAt,omitempty"`
+	ArtifactError      *string    `json:"artifactError,omitempty"`
+	AdminNote          *string    `json:"adminNote,omitempty"`
 }
 
 type UploadChunk struct {
@@ -70,6 +75,11 @@ type Job struct {
 	FinishedAt         *time.Time `json:"finishedAt,omitempty"`
 	CreatedAt          time.Time  `json:"createdAt"`
 	UpdatedAt          time.Time  `json:"updatedAt"`
+	RemovedAt          *time.Time `json:"removedAt,omitempty"`
+	RemovedByUserID    *string    `json:"removedByUserId,omitempty"`
+	ArtifactsDeletedAt *time.Time `json:"artifactsDeletedAt,omitempty"`
+	ArtifactError      *string    `json:"artifactError,omitempty"`
+	AdminNote          *string    `json:"adminNote,omitempty"`
 }
 
 type Event struct {

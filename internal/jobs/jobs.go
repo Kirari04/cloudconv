@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/kirari04/cloudconv/internal/artifacts"
 	"github.com/kirari04/cloudconv/internal/config"
 	"github.com/kirari04/cloudconv/internal/media"
 	"github.com/kirari04/cloudconv/internal/store"
@@ -71,11 +73,18 @@ func (s *Service) Create(ctx context.Context, upload *store.Upload, targetFormat
 	if upload.MediaType == nil || upload.SourcePath == nil {
 		return nil, "", errors.New("upload has not been completed")
 	}
+	targetFormat = strings.ToLower(strings.TrimSpace(targetFormat))
 	if preset == "" {
 		preset = "balanced"
 	}
 	opts = media.ApplyPreset(targetFormat, preset, opts)
+	opts.EffectiveVideoEncoder = ""
+	opts.EffectiveAudioEncoder = ""
 	if err := media.Validate(*upload.MediaType, targetFormat, preset, opts); err != nil {
+		return nil, "", err
+	}
+	opts, err := media.ResolveEffectiveCodecs(ctx, targetFormat, opts)
+	if err != nil {
 		return nil, "", err
 	}
 	token := ""
@@ -107,13 +116,109 @@ func (s *Service) Create(ctx context.Context, upload *store.Upload, targetFormat
 }
 
 func (s *Service) Cancel(ctx context.Context, jobID string) error {
+	job, err := s.store.JobByID(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	if job.Status != "queued" && job.Status != "converting" {
+		return store.ErrTerminalState
+	}
 	s.cancelMu.Lock()
 	cancel := s.cancelers[jobID]
 	s.cancelMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	result := artifacts.DeleteJobArtifacts(job, s.cfg.ConvertedDir)
+	if result.ErrorString() != nil {
+		return fmt.Errorf("could not delete partial output: %s", *result.ErrorString())
+	}
 	return s.store.CancelJob(ctx, jobID)
+}
+
+func (s *Service) CancelForAdmin(ctx context.Context, jobID, adminUserID, note string) (*store.Job, error) {
+	job, err := s.store.JobByID(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != "queued" && job.Status != "converting" {
+		return nil, store.ErrTerminalState
+	}
+	s.cancelMu.Lock()
+	cancel := s.cancelers[jobID]
+	s.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	cleanup := artifacts.DeleteJobArtifacts(job, s.cfg.ConvertedDir)
+	artifactError := cleanup.ErrorString()
+	updated, err := s.store.CancelJobForAdmin(ctx, jobID, adminUserID, note, artifactError)
+	if err != nil {
+		return nil, err
+	}
+	upload, _ := s.store.UploadByID(ctx, job.UploadID)
+	var ip, ua string
+	if upload != nil {
+		ip = upload.IPAddress
+		ua = upload.UserAgent
+	}
+	metadata := eventMetadata(map[string]any{
+		"adminUserId": adminUserID,
+		"note":        note,
+		"deleted":     cleanup.Deleted,
+		"errors":      cleanup.Errors,
+	})
+	_ = s.event(ctx, "info", "job.canceled", &adminUserID, &job.UploadID, &job.ID, "job canceled by admin", ip, ua, metadata)
+	return updated, nil
+}
+
+func (s *Service) Remove(ctx context.Context, jobID, adminUserID, note string) (*store.Job, bool, *string, error) {
+	job, err := s.store.JobByID(ctx, jobID)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	if job.Status == "removed" {
+		return nil, false, nil, store.ErrTerminalState
+	}
+	if job.Status == "queued" || job.Status == "converting" {
+		if _, err := s.CancelForAdmin(ctx, jobID, adminUserID, note); err != nil && !errors.Is(err, store.ErrTerminalState) {
+			return nil, false, nil, err
+		}
+		job, err = s.store.JobByID(ctx, jobID)
+		if err != nil {
+			return nil, false, nil, err
+		}
+	}
+	cleanup := artifacts.DeleteJobArtifacts(job, s.cfg.ConvertedDir)
+	if active, err := s.store.NonRemovedActiveJobsByUploadID(ctx, job.UploadID); err != nil {
+		cleanup.Errors = append(cleanup.Errors, err.Error())
+	} else if len(active) == 0 {
+		if upload, err := s.store.UploadByID(ctx, job.UploadID); err == nil {
+			cleanup.Merge(artifacts.DeleteUploadArtifacts(upload, s.cfg.UploadDir))
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			cleanup.Errors = append(cleanup.Errors, err.Error())
+		}
+	}
+	artifactError := cleanup.ErrorString()
+	updated, err := s.store.MarkJobRemoved(ctx, jobID, adminUserID, note, artifactError)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	metadata := eventMetadata(map[string]any{
+		"adminUserId": adminUserID,
+		"uploadId":    job.UploadID,
+		"note":        note,
+		"deleted":     cleanup.Deleted,
+		"errors":      cleanup.Errors,
+	})
+	upload, _ := s.store.UploadByID(ctx, job.UploadID)
+	var ip, ua string
+	if upload != nil {
+		ip = upload.IPAddress
+		ua = upload.UserAgent
+	}
+	_ = s.event(ctx, "info", "job.removed", &adminUserID, &job.UploadID, &job.ID, "job removed by admin", ip, ua, metadata)
+	return updated, artifactError == nil, artifactError, nil
 }
 
 func (s *Service) JobResponse(ctx context.Context, job *store.Job, token string) map[string]any {
@@ -132,8 +237,8 @@ func (s *Service) JobResponse(ctx context.Context, job *store.Job, token string)
 			out["queuePosition"] = pos
 		}
 	}
-	if job.ErrorMessage != nil {
-		out["error"] = *job.ErrorMessage
+	if job.Status == "error" {
+		out["error"] = "Conversion failed."
 	}
 	if job.Status == "finished" {
 		url := "/download/" + job.ID
@@ -171,6 +276,13 @@ func (s *Service) convert(parent context.Context, job *store.Job) {
 		return
 	}
 	opts := media.DecodeOptions(job.OptionsJSON)
+	opts, err = resolveMissingEffectiveCodecs(ctx, job.TargetFormat, opts)
+	if err != nil {
+		message := "conversion failed: " + err.Error()
+		_ = s.store.FailJob(context.Background(), job.ID, message)
+		_ = s.event(context.Background(), "error", "job.failed", upload.OwnerUserID, &upload.ID, &job.ID, message, upload.IPAddress, upload.UserAgent, nil)
+		return
+	}
 	outputPath := filepath.Join(s.cfg.ConvertedDir, job.ID+"."+media.ExtensionFor(job.TargetFormat))
 	if err := os.MkdirAll(s.cfg.ConvertedDir, 0755); err != nil {
 		_ = s.store.FailJob(context.Background(), job.ID, "could not prepare output directory")
@@ -217,9 +329,11 @@ func (s *Service) convert(parent context.Context, job *store.Job) {
 	case <-time.After(2 * time.Second):
 	}
 	current, _ := s.store.JobByID(context.Background(), job.ID)
-	if current != nil && current.Status == "canceled" {
+	if current != nil && (current.Status == "canceled" || current.Status == "removed") {
 		_ = os.Remove(outputPath)
-		_ = s.event(context.Background(), "info", "job.canceled", upload.OwnerUserID, &upload.ID, &job.ID, "job canceled", upload.IPAddress, upload.UserAgent, nil)
+		if current.Status == "canceled" {
+			_ = s.event(context.Background(), "info", "job.canceled", upload.OwnerUserID, &upload.ID, &job.ID, "job canceled", upload.IPAddress, upload.UserAgent, nil)
+		}
 		return
 	}
 	if err != nil {
@@ -262,14 +376,9 @@ func buildFFmpegCommand(ctx context.Context, job *store.Job, upload *store.Uploa
 			args = append(args, "-loop", loop, "-vf", filter)
 		} else {
 			args = append(args, "-map", "0:v:0", "-map", "0:a?")
-			switch format {
-			case "mp4", "mov", "mkv":
-				args = append(args, "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p")
-			case "webm":
-				args = append(args, "-c:v", "libvpx-vp9")
-			case "avi":
-				args = append(args, "-c:v", "mpeg4")
-			}
+			videoCodec := resolveVideoCodec(ctx, format, opts)
+			audioCodec := resolveAudioCodec(ctx, format, opts)
+			args = appendVideoCodecArgs(args, format, job.Preset, videoCodec, opts)
 			var vf []string
 			if opts.MaxHeight != 0 {
 				vf = append(vf, fmt.Sprintf("scale=-2:%d", opts.MaxHeight))
@@ -283,16 +392,11 @@ func buildFFmpegCommand(ctx context.Context, job *store.Job, upload *store.Uploa
 			if opts.Framerate != 0 {
 				args = append(args, "-r", strconv.Itoa(opts.Framerate))
 			}
-			if opts.VideoBitrate != 0 {
+			if opts.VideoBitrate != 0 && videoCodec.ID != "av1" {
 				args = append(args, "-b:v", fmt.Sprintf("%dk", opts.VideoBitrate))
 			}
-			switch format {
-			case "mp4", "mov", "mkv", "avi":
-				args = append(args, "-c:a", "aac")
-			case "webm":
-				args = append(args, "-c:a", "libopus")
-			}
-			if opts.AudioBitrate != 0 {
+			args = appendAudioCodecArgs(args, format, audioCodec)
+			if opts.AudioBitrate != 0 && audioCodec.SupportsBitrate {
 				args = append(args, "-b:a", fmt.Sprintf("%dk", opts.AudioBitrate))
 			}
 			if format == "mp4" {
@@ -338,6 +442,115 @@ func buildFFmpegCommand(ctx context.Context, job *store.Job, upload *store.Uploa
 	}
 	args = append(args, "-y", outputPath)
 	return exec.CommandContext(ctx, "ffmpeg", args...)
+}
+
+func resolveMissingEffectiveCodecs(ctx context.Context, format string, opts media.Options) (media.Options, error) {
+	if media.OutputKind(format) != "video" || format == "gif" {
+		return opts, nil
+	}
+	videoCodec := media.ResolveVideoCodec(format, opts)
+	if videoCodec.ID != "" && opts.EffectiveVideoEncoder == "" {
+		encoder, ok := media.ResolveRuntimeCodecEncoder(ctx, videoCodec)
+		if !ok {
+			return opts, fmt.Errorf("video codec %s is not available on this server", videoCodec.ID)
+		}
+		opts.EffectiveVideoEncoder = encoder
+	}
+	audioCodec := media.ResolveAudioCodec(format, opts)
+	if audioCodec.ID != "" && opts.EffectiveAudioEncoder == "" {
+		encoder, ok := media.ResolveRuntimeCodecEncoder(ctx, audioCodec)
+		if !ok {
+			return opts, fmt.Errorf("audio codec %s is not available on this server", audioCodec.ID)
+		}
+		opts.EffectiveAudioEncoder = encoder
+	}
+	return opts, nil
+}
+
+func resolveVideoCodec(ctx context.Context, format string, opts media.Options) media.CodecChoice {
+	codec := media.ResolveVideoCodec(format, opts)
+	if opts.EffectiveVideoEncoder != "" {
+		codec.Encoder = opts.EffectiveVideoEncoder
+	} else if encoder, ok := media.ResolveRuntimeCodecEncoder(ctx, codec); ok {
+		codec.Encoder = encoder
+	}
+	return codec
+}
+
+func resolveAudioCodec(ctx context.Context, format string, opts media.Options) media.CodecChoice {
+	codec := media.ResolveAudioCodec(format, opts)
+	if opts.EffectiveAudioEncoder != "" {
+		codec.Encoder = opts.EffectiveAudioEncoder
+	} else if encoder, ok := media.ResolveRuntimeCodecEncoder(ctx, codec); ok {
+		codec.Encoder = encoder
+	}
+	return codec
+}
+
+func appendVideoCodecArgs(args []string, format, preset string, codec media.CodecChoice, opts media.Options) []string {
+	switch codec.ID {
+	case "h264":
+		args = append(args, "-c:v", codec.Encoder, "-profile:v", "baseline", "-level", "3.0", "-pix_fmt", "yuv420p")
+	case "h265":
+		args = append(args, "-c:v", codec.Encoder, "-pix_fmt", "yuv420p")
+		if format == "mp4" || format == "mov" {
+			args = append(args, "-tag:v", "hvc1")
+		}
+	case "av1":
+		args = appendAV1CodecArgs(args, preset, codec.Encoder, opts.VideoBitrate)
+	case "vp9", "vp8", "mpeg4":
+		args = append(args, "-c:v", codec.Encoder)
+	}
+	return args
+}
+
+func appendAV1CodecArgs(args []string, preset, encoder string, videoBitrate int) []string {
+	args = append(args, "-c:v", encoder)
+	switch encoder {
+	case "libsvtav1":
+		args = append(args, "-preset", av1PresetValue(preset, "10", "8", "6"))
+		if videoBitrate != 0 {
+			args = append(args, "-b:v", fmt.Sprintf("%dk", videoBitrate))
+		} else {
+			args = append(args, "-crf", av1PresetValue(preset, "38", "34", "30"))
+		}
+		args = append(args, "-pix_fmt", "yuv420p")
+	case "librav1e":
+		args = append(args, "-speed", av1PresetValue(preset, "10", "8", "6"))
+		if videoBitrate != 0 {
+			args = append(args, "-b:v", fmt.Sprintf("%dk", videoBitrate))
+		} else {
+			args = append(args, "-qp", av1PresetValue(preset, "140", "120", "100"))
+		}
+		args = append(args, "-pix_fmt", "yuv420p")
+	case "libaom-av1":
+		args = append(args, "-cpu-used", av1PresetValue(preset, "8", "6", "4"), "-row-mt", "1", "-threads", "0")
+		if videoBitrate != 0 {
+			args = append(args, "-b:v", fmt.Sprintf("%dk", videoBitrate))
+		} else {
+			args = append(args, "-crf", av1PresetValue(preset, "40", "36", "32"))
+		}
+		args = append(args, "-pix_fmt", "yuv420p")
+	}
+	return args
+}
+
+func av1PresetValue(preset, small, balanced, high string) string {
+	switch preset {
+	case "small":
+		return small
+	case "high":
+		return high
+	default:
+		return balanced
+	}
+}
+
+func appendAudioCodecArgs(args []string, _ string, codec media.CodecChoice) []string {
+	if codec.ID == "" {
+		return args
+	}
+	return append(args, "-c:a", codec.Encoder)
 }
 
 func getFileDuration(ctx context.Context, filePath string) float64 {
@@ -431,6 +644,15 @@ func (s *Service) event(ctx context.Context, level, kind string, actor, uploadID
 		UserAgent:    &ua,
 		CreatedAt:    time.Now().UTC(),
 	})
+}
+
+func eventMetadata(value map[string]any) *string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	out := string(data)
+	return &out
 }
 
 type cappedBuffer struct {

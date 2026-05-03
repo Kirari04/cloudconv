@@ -1,24 +1,76 @@
 import {
   Activity,
+  AlertCircle,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  Copy,
+  Cpu,
   Download,
+  Edit3,
+  ExternalLink,
   FileAudio,
   FileImage,
   FileVideo,
+  FileWarning,
+  Files,
+  Filter,
+  HardDrive,
+  History,
+  Image,
+  Info,
+  Layers,
+  LayoutDashboard,
   LogIn,
+  LogOut,
+  Music,
   Pause,
+  PauseCircle,
   Play,
+  Plus,
   RefreshCw,
+  RotateCcw,
+  Save,
+  SearchX,
   Settings,
+  Settings2,
+  Shield,
+  ShieldAlert,
   ShieldCheck,
+  Trash2,
   Upload,
+  UploadCloud,
+  User,
+  UserCheck,
+  UserMinus,
+  UserPlus,
+  UserX,
+  Video,
+  X,
   XCircle,
+  Zap,
   createIcons
 } from 'lucide';
 import './styles.css';
 import { loadConfig, type AppConfig } from './api';
 import { login, logout, setup } from './auth';
-import { detectMediaType, formatsFor, humanBytes, type MediaType } from './catalog';
-import { renderAdmin } from './admin';
+import {
+  audioCodecSupportsBitrate,
+  detectMediaType,
+  formatById,
+  formatsFor,
+  humanBytes,
+  presetById,
+  presetEffectFor,
+  presetOptionLabel,
+  presetPlaceholder,
+  presetSummaryRows,
+  resetInvalidCodecOptions,
+  type FormatOption,
+  type MediaType
+} from './catalog';
+import { renderAdmin } from './admin/index';
 import { uploadAndConvert, type UploadController, type UploadProgress } from './upload';
 
 type FileItem = {
@@ -49,7 +101,7 @@ async function boot() {
     if (config.auth.user?.role !== 'admin') {
       renderLogin(config, 'Admin access requires login.');
     } else {
-      await renderAdmin(appRoot);
+      await renderAdmin(appRoot, config.auth);
       activateIcons();
     }
     return;
@@ -73,28 +125,39 @@ function renderConverter(config: AppConfig) {
   const files: FileItem[] = [];
   const states = defaultGroupStates(config);
   appRoot.innerHTML = `
-    <main class="shell mx-auto flex w-full max-w-7xl flex-col gap-5 px-4 py-5">
+    <main class="shell mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
       ${topbar(config)}
-      <section class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_23rem]">
-        <div class="flex flex-col gap-4">
-          <div id="dropzone" class="dropzone rounded-lg p-6">
-            <div class="flex flex-col items-center gap-3 text-center">
-              <div class="rounded-full bg-emerald-50 p-3 text-emerald-800"><i data-lucide="upload" class="h-7 w-7"></i></div>
-              <div>
-                <h1 class="text-2xl font-extrabold tracking-tight">Convert media files</h1>
-                <p class="mt-1 max-w-xl text-sm text-slate-600">Drop video, audio, or image files. CloudConv detects each type and applies shared settings per group.</p>
+      
+      <section class="grid gap-8 lg:grid-cols-[1fr_20rem]">
+        <div class="flex flex-col gap-6">
+          <div id="dropzone" class="dropzone group relative flex flex-col items-center justify-center rounded-2xl p-12 transition-all">
+            <div class="flex flex-col items-center gap-4 text-center">
+              <div class="flex h-16 w-16 items-center justify-center rounded-2xl bg-brand-50 text-brand-600 transition-transform group-hover:scale-110">
+                <i data-lucide="upload" class="h-8 w-8"></i>
               </div>
-              <label class="btn btn-primary cursor-pointer">
-                <i data-lucide="upload" class="h-4 w-4"></i>
-                Select files
+              <div class="space-y-1">
+                <h1 class="text-2xl font-bold tracking-tight text-slate-900">Convert your media</h1>
+                <p class="mx-auto max-w-sm text-sm text-slate-500">Drag and drop video, audio, or images here to start your conversion.</p>
+              </div>
+              <label class="btn btn-primary mt-2 cursor-pointer shadow-md">
+                <i data-lucide="plus" class="h-4 w-4"></i>
+                Choose Files
                 <input id="file-input" class="sr-only" type="file" multiple />
               </label>
-              <div class="text-xs font-semibold text-slate-500">Max upload ${humanBytes(Number(config.settings.max_upload_bytes || 0))}</div>
+              <p class="text-[11px] font-medium uppercase tracking-wider text-slate-400">Max size ${humanBytes(Number(config.settings.max_upload_bytes || 0))}</p>
             </div>
           </div>
-          <section id="file-list" class="flex flex-col gap-3"></section>
+
+          <div id="file-list-container" class="space-y-4">
+            <div class="flex items-center justify-between px-2">
+              <h2 class="text-sm font-bold uppercase tracking-widest text-slate-400">Files to convert</h2>
+              <div id="file-count" class="text-xs font-semibold text-slate-500">0 files</div>
+            </div>
+            <section id="file-list" class="flex flex-col gap-4"></section>
+          </div>
         </div>
-        <aside id="options" class="flex flex-col gap-4"></aside>
+
+        <aside id="options" class="flex flex-col gap-6"></aside>
       </section>
     </main>
   `;
@@ -102,6 +165,7 @@ function renderConverter(config: AppConfig) {
   const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
   const fileList = document.querySelector<HTMLElement>('#file-list')!;
   const options = document.querySelector<HTMLElement>('#options')!;
+  const fileCount = document.querySelector<HTMLElement>('#file-count')!;
 
   const addFiles = (selected: FileList | File[]) => {
     Array.from(selected).forEach((file) => {
@@ -126,6 +190,7 @@ function renderConverter(config: AppConfig) {
   });
 
   function renderAll() {
+    fileCount.textContent = `${files.length} file${files.length === 1 ? '' : 's'}`;
     renderOptions();
     renderFiles();
     activateIcons();
@@ -134,33 +199,58 @@ function renderConverter(config: AppConfig) {
   function renderOptions() {
     const presentTypes = new Set(files.map((item) => item.type).filter((type): type is MediaType => type !== 'unknown'));
     options.innerHTML = `
-      <section class="panel rounded-lg p-4">
-        <div class="mb-3 flex items-center justify-between gap-3">
-          <h2 class="font-bold">Conversion settings</h2>
-          <button id="start-all" class="btn btn-primary" type="button" ${files.length === 0 ? 'disabled' : ''}>
-            <i data-lucide="refresh-cw" class="h-4 w-4"></i> Convert
+      <section class="panel sticky top-10 flex flex-col gap-6 rounded-2xl p-6">
+        <div class="flex items-center justify-between border-b border-slate-100 pb-4">
+          <h2 class="font-bold text-slate-900">Settings</h2>
+          <button id="start-all" class="btn btn-primary h-9 px-4 py-0" type="button" ${files.length === 0 ? 'disabled' : ''}>
+            <i data-lucide="play" class="h-3.5 w-3.5"></i> Start
           </button>
         </div>
-        ${files.length === 0 ? '<p class="text-sm text-slate-600">Select files to show relevant formats and options.</p>' : ''}
-        ${Array.from(presentTypes).map((type) => groupControls(type, states[type], config)).join('')}
-        ${files.some((item) => item.type === 'unknown') ? '<p class="mt-3 rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-800">Unsupported files are shown in the list and will be skipped.</p>' : ''}
+        
+        <div class="space-y-6">
+          ${files.length === 0 ? '<p class="text-center text-sm text-slate-400 py-4">Add files to configure</p>' : ''}
+          ${Array.from(presentTypes).map((type) => groupControls(type, states[type], config)).join('')}
+        </div>
+
+        ${files.some((item) => item.type === 'unknown') ? `
+          <div class="flex gap-3 rounded-xl bg-amber-50 p-4 text-xs font-medium text-amber-800 border border-amber-100/50">
+            <i data-lucide="alert-circle" class="h-4 w-4 shrink-0"></i>
+            <p>Some files have unsupported formats and will be skipped.</p>
+          </div>
+        ` : ''}
       </section>
     `;
     options.querySelectorAll<HTMLSelectElement>('[data-format]').forEach((select) => {
       select.addEventListener('change', () => {
-        states[select.dataset.format as MediaType].targetFormat = select.value;
+        const type = select.dataset.format as MediaType;
+        states[type].targetFormat = select.value;
+        resetInvalidCodecOptions(states[type].options, formatById(config.catalog, select.value));
         renderAll();
       });
     });
     options.querySelectorAll<HTMLSelectElement>('[data-preset]').forEach((select) => {
       select.addEventListener('change', () => {
         states[select.dataset.preset as MediaType].preset = select.value;
+        renderAll();
       });
     });
-    options.querySelectorAll<HTMLInputElement>('[data-option]').forEach((input) => {
+    options.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-option]').forEach((input) => {
       input.addEventListener('change', () => {
         const [type, key] = (input.dataset.option || '').split(':') as [MediaType, string];
-        states[type].options[key] = input.type === 'checkbox' ? input.checked : Number(input.value || 0);
+        if (input instanceof HTMLInputElement && input.type === 'checkbox') {
+          states[type].options[key] = input.checked;
+        } else if (input instanceof HTMLInputElement && input.type === 'number') {
+          states[type].options[key] = Number(input.value || 0);
+        } else {
+          states[type].options[key] = input.value;
+        }
+        if (type === 'video' && key === 'audioCodec') {
+          const format = formatById(config.catalog, states.video.targetFormat);
+          if (!audioCodecSupportsBitrate(format, String(states.video.options.audioCodec || ''))) {
+            delete states.video.options.audioBitrate;
+          }
+        }
+        renderAll();
       });
     });
     options.querySelectorAll<HTMLButtonElement>('[data-advanced]').forEach((button) => {
@@ -174,7 +264,15 @@ function renderConverter(config: AppConfig) {
   }
 
   function renderFiles() {
-    fileList.innerHTML = files.length === 0 ? '' : files.map((item) => fileRow(item)).join('');
+    fileList.innerHTML = files.length === 0 
+      ? `
+        <div class="flex flex-col items-center justify-center py-20 opacity-40">
+          <i data-lucide="files" class="h-12 w-12 text-slate-300"></i>
+          <p class="mt-4 text-sm font-medium text-slate-500">No files selected</p>
+        </div>
+      ` 
+      : files.map((item) => fileRow(item)).join('');
+      
     fileList.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((button) => {
       button.addEventListener('click', () => {
         const index = files.findIndex((item) => item.id === button.dataset.remove);
@@ -226,100 +324,235 @@ function defaultGroupStates(config: AppConfig): Record<MediaType, GroupState> {
 
 function groupControls(type: MediaType, state: GroupState, config: AppConfig) {
   const formats = formatsFor(config.catalog, type);
+  const icon = type === 'video' ? 'video' : type === 'audio' ? 'music' : 'image';
   return `
-    <div class="mt-4 rounded-lg border border-slate-200 p-3">
-      <div class="mb-3 flex items-center justify-between">
-        <h3 class="font-bold capitalize">${type}</h3>
-        <button class="btn btn-secondary min-h-8 px-2 py-1 text-xs" data-advanced="${type}" type="button">
-          <i data-lucide="settings" class="h-3.5 w-3.5"></i> Advanced
+    <div class="space-y-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
+            <i data-lucide="${icon}" class="h-4 w-4"></i>
+          </div>
+          <h3 class="text-sm font-bold capitalize text-slate-900">${type}</h3>
+        </div>
+        <button class="btn btn-ghost h-8 px-2 py-0 text-[11px] font-bold uppercase tracking-wider" data-advanced="${type}" type="button">
+          <i data-lucide="settings-2" class="h-3.5 w-3.5"></i> ${state.advanced ? 'Simple' : 'Advanced'}
         </button>
       </div>
-      <label class="block text-sm font-semibold text-slate-700">Target
-        <select class="field mt-1" data-format="${type}">
-          ${formats.map((format) => `<option value="${format.id}" ${state.targetFormat === format.id ? 'selected' : ''}>${format.label}</option>`).join('')}
-        </select>
-      </label>
-      <label class="mt-3 block text-sm font-semibold text-slate-700">Preset
-        <select class="field mt-1" data-preset="${type}">
-          ${config.catalog.presets.map((preset) => `<option value="${preset}" ${state.preset === preset ? 'selected' : ''}>${label(preset)}</option>`).join('')}
-        </select>
-      </label>
-      ${state.advanced ? advancedControls(type, state) : ''}
+      
+      <div class="grid gap-3">
+        <label class="space-y-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Output Format</span>
+          <select class="field" data-format="${type}">
+            ${formats.map((format) => `<option value="${format.id}" ${state.targetFormat === format.id ? 'selected' : ''}>${format.label}</option>`).join('')}
+          </select>
+        </label>
+        
+        <label class="space-y-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Preset</span>
+          <select class="field" data-preset="${type}">
+            ${config.catalog.presets.map((preset) => `<option value="${preset}" ${state.preset === preset ? 'selected' : ''}>${escapeHTML(presetOptionLabel(config.catalog, preset, type, state.targetFormat))}</option>`).join('')}
+          </select>
+        </label>
+
+        ${presetSummary(type, state, config)}
+
+        ${state.advanced ? `
+          <div class="mt-2 space-y-3 rounded-xl bg-slate-50/50 p-4 border border-slate-100">
+            ${advancedControls(type, state, config)}
+          </div>
+        ` : ''}
+      </div>
     </div>
   `;
 }
 
-function advancedControls(type: MediaType, state: GroupState) {
+function presetSummary(type: MediaType, state: GroupState, config: AppConfig) {
+  const format = formatById(config.catalog, state.targetFormat);
+  const preset = presetById(config.catalog, state.preset);
+  const effect = presetEffectFor(config.catalog, state.preset, type, state.targetFormat);
+  const rows = presetSummaryRows(type, state.options, format, effect);
+  const title = `${preset?.label || label(state.preset)} preset`;
+  const summary = effect?.summary || preset?.summary || 'Preset defaults';
+  return `
+    <div class="rounded-xl border border-brand-100 bg-brand-50/60 p-3 text-xs text-slate-600">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="font-bold leading-snug text-slate-900">${escapeHTML(title)}</div>
+          <p class="mt-0.5 leading-snug text-slate-600">${escapeHTML(summary)}</p>
+        </div>
+        <span class="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-black uppercase tracking-wider text-brand-600 shadow-sm">${escapeHTML(state.preset)}</span>
+      </div>
+      <dl class="mt-2 grid gap-1.5">
+        ${rows.map((row) => `
+          <div class="flex justify-between gap-3">
+            <dt class="text-slate-500">${escapeHTML(row.label)}</dt>
+            <dd class="text-right font-semibold text-slate-700">${escapeHTML(row.value)}</dd>
+          </div>
+        `).join('')}
+      </dl>
+    </div>
+  `;
+}
+
+function advancedControls(type: MediaType, state: GroupState, config: AppConfig) {
   if (type === 'video') {
+    const format = formatById(config.catalog, state.targetFormat);
+    if (state.targetFormat === 'gif') {
+      return `
+        <div class="grid gap-4">
+          ${numberField(type, 'maxWidth', 'Width', state.options.maxWidth, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'maxWidth', '480'))}
+          ${numberField(type, 'framerate', 'FPS', state.options.framerate, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'framerate', '15'))}
+          <label class="flex items-center gap-2.5 cursor-pointer">
+            <input type="checkbox" class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20" data-option="${type}:loop" ${(state.options.loop ?? true) ? 'checked' : ''}/>
+            <span class="text-xs font-semibold text-slate-700">Loop GIFs</span>
+          </label>
+        </div>
+      `;
+    }
+    const audioSupportsBitrate = audioCodecSupportsBitrate(format, String(state.options.audioCodec || ''));
     return `
-      <div class="mt-3 grid gap-2">
-        ${numberField(type, 'maxHeight', 'Max height', state.options.maxHeight, '720')}
+      <div class="grid gap-4">
+        ${codecSelect(type, 'videoCodec', 'Video codec', state.options.videoCodec, format?.videoCodecs)}
+        ${codecSelect(type, 'audioCodec', 'Audio codec', state.options.audioCodec, format?.audioCodecs)}
+        ${numberField(type, 'maxHeight', 'Max height', state.options.maxHeight, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'maxHeight', '720'))}
         ${numberField(type, 'framerate', 'FPS', state.options.framerate, '30')}
-        ${numberField(type, 'videoBitrate', 'Video kbps', state.options.videoBitrate, '2500')}
-        ${numberField(type, 'audioBitrate', 'Audio kbps', state.options.audioBitrate, '128')}
-        <label class="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" data-option="${type}:loop" ${(state.options.loop ?? true) ? 'checked' : ''}/> Loop GIFs</label>
+        <div class="grid grid-cols-2 gap-3">
+          ${numberField(type, 'videoBitrate', 'Video kbps', state.options.videoBitrate, '2500')}
+          ${audioSupportsBitrate ? numberField(type, 'audioBitrate', 'Audio kbps', state.options.audioBitrate, '128') : ''}
+        </div>
       </div>
     `;
   }
   if (type === 'audio') {
-    return `<div class="mt-3">${numberField(type, 'audioBitrate', 'Audio kbps', state.options.audioBitrate, '192')}</div>`;
+    return `<div class="grid gap-4">${numberField(type, 'audioBitrate', 'Audio kbps', state.options.audioBitrate, '192')}</div>`;
   }
   return `
-    <div class="mt-3 grid gap-2">
+    <div class="grid gap-4">
       ${numberField(type, 'maxWidth', 'Max width', state.options.maxWidth, '1280')}
-      ${numberField(type, 'quality', 'Quality', state.options.quality, '86')}
+      ${numberField(type, 'quality', 'Quality %', state.options.quality, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'quality', '86'))}
     </div>
   `;
 }
 
 function numberField(type: MediaType, key: string, text: string, value: unknown, placeholder: string) {
-  return `<label class="block text-sm font-semibold text-slate-700">${text}<input class="field mt-1" type="number" min="0" data-option="${type}:${key}" value="${value || ''}" placeholder="${placeholder}" /></label>`;
+  return `
+    <label class="space-y-1.5">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">${text}</span>
+      <input class="field" type="number" min="0" data-option="${type}:${key}" value="${value || ''}" placeholder="${placeholder}" />
+    </label>
+  `;
+}
+
+function codecSelect(type: MediaType, key: 'videoCodec' | 'audioCodec', text: string, value: unknown, codecs?: FormatOption['videoCodecs']) {
+  if (!codecs?.length) return '';
+  const selected = String(value || '');
+  return `
+    <label class="space-y-1.5">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">${text}</span>
+      <select class="field" data-option="${type}:${key}">
+        <option value="" ${selected === '' ? 'selected' : ''}>Auto (recommended)</option>
+        ${codecs.map((codec) => `<option value="${codec.id}" ${selected === codec.id ? 'selected' : ''}>${escapeHTML(codec.label)}</option>`).join('')}
+      </select>
+    </label>
+  `;
 }
 
 function fileRow(item: FileItem) {
-  const icon = item.type === 'video' ? 'file-video' : item.type === 'audio' ? 'file-audio' : item.type === 'image' ? 'file-image' : 'x-circle';
+  const icon = item.type === 'video' ? 'file-video' : item.type === 'audio' ? 'file-audio' : item.type === 'image' ? 'file-image' : 'file-warning';
   const progress = item.progress;
   const percent = progress?.phase === 'uploading' ? progress.uploadPercent : progress?.convertPercent || 0;
-  const status = progress?.message || (item.type === 'unknown' ? 'Unsupported' : 'Ready');
+  
+  let statusColor = 'text-slate-500';
+  let badgeColor = 'badge';
+  if (progress?.phase === 'finished') {
+    statusColor = 'text-emerald-600';
+    badgeColor = 'badge badge-success';
+  } else if (progress?.phase === 'error') {
+    statusColor = 'text-red-600';
+  } else if (progress?.phase === 'converting' || progress?.phase === 'uploading') {
+    statusColor = 'text-brand-600';
+    badgeColor = 'badge badge-brand';
+  }
+
+  const status = progress?.message || (item.type === 'unknown' ? 'Unsupported' : 'Ready to convert');
+  
   return `
-    <article class="panel rounded-lg p-4">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div class="flex min-w-0 gap-3">
-          <div class="rounded-md bg-slate-100 p-2 text-slate-700"><i data-lucide="${icon}" class="h-5 w-5"></i></div>
-          <div class="min-w-0">
-            <h3 class="truncate font-bold">${escapeHTML(item.file.name)}</h3>
-            <div class="mt-1 flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
-              <span>${humanBytes(item.file.size)}</span>
-              <span class="badge">${item.type}</span>
-              <span>${escapeHTML(status)}</span>
+    <article class="panel group relative overflow-hidden rounded-2xl p-5 transition-all hover:border-slate-300/80">
+      <div class="relative z-10 flex flex-wrap items-center justify-between gap-6">
+        <div class="flex min-w-0 flex-1 items-center gap-4">
+          <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 transition-colors border border-transparent group-hover:border-brand-100 shadow-sm">
+            <i data-lucide="${icon}" class="h-6 w-6"></i>
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <h3 class="truncate font-bold text-slate-900">${escapeHTML(item.file.name)}</h3>
+              <span class="${badgeColor} uppercase tracking-tighter text-[10px]">${item.type}</span>
+            </div>
+            <div class="mt-1 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider">
+              <span class="text-slate-400">${humanBytes(item.file.size)}</span>
+              <span class="h-1 w-1 rounded-full bg-slate-200"></span>
+              <span class="${statusColor}">${escapeHTML(status)}</span>
             </div>
           </div>
         </div>
-        <div class="flex gap-2">
-          ${item.controller && progress?.phase !== 'finished' ? `
-            <button class="btn btn-secondary min-h-9 px-2" data-pause="${item.id}" title="Pause"><i data-lucide="pause" class="h-4 w-4"></i></button>
-            <button class="btn btn-secondary min-h-9 px-2" data-resume="${item.id}" title="Resume"><i data-lucide="play" class="h-4 w-4"></i></button>
-            <button class="btn btn-danger min-h-9 px-2" data-cancel="${item.id}" title="Cancel"><i data-lucide="x-circle" class="h-4 w-4"></i></button>
-          ` : `<button class="btn btn-secondary min-h-9 px-2" data-remove="${item.id}" title="Remove"><i data-lucide="x-circle" class="h-4 w-4"></i></button>`}
+        
+        <div class="flex items-center gap-2">
+          ${item.controller && progress?.phase !== 'finished' && progress?.phase !== 'error' && progress?.phase !== 'canceled' ? `
+            <div class="flex items-center gap-1">
+              <button class="btn btn-ghost h-10 w-10 p-0 rounded-full" data-pause="${item.id}" title="Pause"><i data-lucide="pause" class="h-4 w-4"></i></button>
+              <button class="btn btn-ghost h-10 w-10 p-0 rounded-full" data-resume="${item.id}" title="Resume"><i data-lucide="play" class="h-4 w-4"></i></button>
+              <button class="btn btn-ghost h-10 w-10 p-0 rounded-full text-red-500 hover:bg-red-50" data-cancel="${item.id}" title="Cancel"><i data-lucide="x" class="h-4 w-4"></i></button>
+            </div>
+          ` : `
+            <button class="btn btn-ghost h-10 w-10 p-0 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50" data-remove="${item.id}" title="Remove">
+              <i data-lucide="trash-2" class="h-4 w-4"></i>
+            </button>
+          `}
         </div>
       </div>
-      ${progress ? `<div class="mt-4 progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>` : ''}
-      ${preview(progress)}
+      
+      ${progress && progress.phase !== 'finished' && progress.phase !== 'error' ? `
+        <div class="mt-5 space-y-2">
+          <div class="progress-track">
+            <div class="progress-fill shadow-[0_0_8px_rgba(83,109,250,0.4)]" style="width:${percent}%"></div>
+          </div>
+        </div>
+      ` : ''}
+      
+      ${preview(progress, item.type)}
     </article>
   `;
 }
 
-function preview(progress?: UploadProgress) {
+function preview(progress: UploadProgress | undefined, type: FileItem['type']) {
   if (!progress?.downloadUrl || progress.phase !== 'finished') return '';
   const url = progress.downloadUrl;
   const lower = url.toLowerCase();
-  if (lower.includes('.mp3') || lower.includes('.wav') || lower.includes('.ogg') || lower.includes('.flac')) {
-    return `<div class="mt-4 flex flex-wrap items-center gap-3"><audio controls src="${url}"></audio>${downloadButton(url)}</div>`;
+  
+  let content = '';
+  if (type === 'video') {
+    content = '';
+  } else if (lower.includes('.mp3') || lower.includes('.wav') || lower.includes('.ogg') || lower.includes('.flac')) {
+    content = `<audio class="w-full h-10" controls src="${url}"></audio>`;
+  } else if (lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.mov')) {
+    content = `<video class="max-h-80 w-full rounded-xl bg-slate-900 shadow-inner" controls src="${url}"></video>`;
+  } else {
+    content = `<img class="max-h-80 w-full rounded-xl border border-slate-100 object-contain bg-slate-50 shadow-inner" src="${url}" alt="Converted preview" />`;
   }
-  if (lower.includes('.mp4') || lower.includes('.webm') || lower.includes('.mov')) {
-    return `<div class="mt-4 grid gap-3"><video class="max-h-72 rounded-md bg-black" controls src="${url}"></video>${downloadButton(url)}</div>`;
-  }
-  return `<div class="mt-4 grid gap-3"><img class="max-h-72 rounded-md border border-slate-200 object-contain" src="${url}" alt="Converted preview" />${downloadButton(url)}</div>`;
+
+  return `
+    <div class="mt-6 flex flex-col gap-4 border-t border-slate-100 pt-6">
+      ${content ? `<div class="relative overflow-hidden">
+        ${content}
+      </div>` : ''}
+      <div class="flex items-center justify-end gap-3">
+        <a class="btn btn-primary shadow-lg shadow-brand-100" href="${url}" download>
+          <i data-lucide="download" class="h-4 w-4"></i>
+          Download Result
+        </a>
+      </div>
+    </div>
+  `;
 }
 
 function downloadButton(url: string) {
@@ -328,13 +561,26 @@ function downloadButton(url: string) {
 
 function renderLogin(config: AppConfig, message = '') {
   appRoot.innerHTML = authShell('Login', `
-    ${message ? `<p class="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-800">${message}</p>` : ''}
-    <form id="login-form" class="grid gap-3">
-      <label class="text-sm font-semibold">Email<input class="field mt-1" type="email" name="email" required /></label>
-      <label class="text-sm font-semibold">Password<input class="field mt-1" type="password" name="password" required /></label>
-      <button class="btn btn-primary" type="submit"><i data-lucide="log-in" class="h-4 w-4"></i> Login</button>
+    ${message ? `<p class="rounded-xl bg-amber-50 p-4 text-xs font-semibold text-amber-800 border border-amber-100/50 mb-4">${message}</p>` : ''}
+    <form id="login-form" class="grid gap-4">
+      <label class="space-y-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Email</span>
+        <input class="field" type="email" name="email" required placeholder="name@example.com" />
+      </label>
+      <label class="space-y-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Password</span>
+        <input class="field" type="password" name="password" required placeholder="••••••••" />
+      </label>
+      <button class="btn btn-primary mt-2 shadow-lg shadow-brand-100" type="submit">
+        <i data-lucide="log-in" class="h-4 w-4"></i> 
+        Sign In
+      </button>
     </form>
-    ${config.setupNeeded ? '<a class="text-sm font-bold text-emerald-800" href="/setup">Create first admin</a>' : ''}
+    ${config.setupNeeded ? `
+      <div class="mt-6 border-t border-slate-100 pt-6 text-center">
+        <a class="text-xs font-bold text-brand-600 hover:text-brand-700 transition-colors" href="/setup">Create first admin account</a>
+      </div>
+    ` : ''}
   `);
   document.querySelector<HTMLFormElement>('#login-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -351,11 +597,23 @@ function renderSetup(config: AppConfig) {
     return;
   }
   appRoot.innerHTML = authShell('Create first admin', `
-    <form id="setup-form" class="grid gap-3">
-      <label class="text-sm font-semibold">Setup token<input class="field mt-1" name="setupToken" required /></label>
-      <label class="text-sm font-semibold">Email<input class="field mt-1" type="email" name="email" required /></label>
-      <label class="text-sm font-semibold">Password<input class="field mt-1" type="password" name="password" required minlength="8" /></label>
-      <button class="btn btn-primary" type="submit"><i data-lucide="shield-check" class="h-4 w-4"></i> Create admin</button>
+    <form id="setup-form" class="grid gap-4">
+      <label class="space-y-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Setup token</span>
+        <input class="field" name="setupToken" required placeholder="Enter token from server logs" />
+      </label>
+      <label class="space-y-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Email</span>
+        <input class="field" type="email" name="email" required placeholder="admin@example.com" />
+      </label>
+      <label class="space-y-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Password</span>
+        <input class="field" type="password" name="password" required minlength="8" placeholder="••••••••" />
+      </label>
+      <button class="btn btn-primary mt-2 shadow-lg shadow-brand-100" type="submit">
+        <i data-lucide="shield-check" class="h-4 w-4"></i> 
+        Create admin
+      </button>
     </form>
   `);
   document.querySelector<HTMLFormElement>('#setup-form')?.addEventListener('submit', async (event) => {
@@ -369,26 +627,61 @@ function renderSetup(config: AppConfig) {
 
 function authShell(title: string, content: string) {
   return `
-    <main class="shell mx-auto flex min-h-screen w-full max-w-md flex-col justify-center gap-4 px-4 py-8">
-      <a href="/" class="text-xl font-extrabold">CloudConv</a>
-      <section class="panel rounded-lg p-5">
-        <h1 class="mb-4 text-2xl font-extrabold">${title}</h1>
-        ${content}
-      </section>
+    <main class="flex min-h-screen items-center justify-center p-6 bg-slate-50">
+      <div class="w-full max-w-[400px] space-y-8">
+        <div class="flex flex-col items-center text-center">
+          <div class="flex h-12 w-12 items-center justify-center rounded-2xl bg-brand-600 text-white shadow-xl shadow-brand-200 mb-4">
+            <i data-lucide="layers" class="h-7 w-7"></i>
+          </div>
+          <h2 class="text-2xl font-black tracking-tight text-slate-900">CloudConv</h2>
+          <p class="mt-1 text-sm font-medium text-slate-500">Fast, local media conversion</p>
+        </div>
+        
+        <div class="panel rounded-3xl p-8 shadow-xl shadow-slate-200/60">
+          <h1 class="mb-6 text-xl font-bold text-slate-900">${title}</h1>
+          ${content}
+        </div>
+        
+        <div class="text-center">
+          <a href="/" class="text-xs font-bold uppercase tracking-widest text-slate-400 hover:text-brand-600 transition-colors">← Back to Converter</a>
+        </div>
+      </div>
     </main>
   `;
 }
 
 function topbar(config: AppConfig) {
   return `
-    <header class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <a href="/" class="text-xl font-extrabold tracking-tight">CloudConv</a>
-        <p class="text-sm font-medium text-slate-500">Self-hosted media conversion</p>
+    <header class="flex flex-wrap items-center justify-between gap-6">
+      <div class="flex items-center gap-3">
+        <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-600 text-white shadow-lg shadow-brand-200">
+          <i data-lucide="layers" class="h-6 w-6"></i>
+        </div>
+        <div>
+          <a href="/" class="text-xl font-black tracking-tight text-slate-900">CloudConv</a>
+          <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400">Media Engine v2</p>
+        </div>
       </div>
-      <nav class="flex flex-wrap gap-2">
-        ${config.auth.user?.role === 'admin' ? '<a class="btn btn-secondary" href="/admin"><i data-lucide="activity" class="h-4 w-4"></i> Admin</a>' : ''}
-        ${config.auth.user ? `<button id="logout" class="btn btn-secondary" type="button">${escapeHTML(config.auth.user.email)}</button>` : '<a class="btn btn-secondary" href="/login"><i data-lucide="log-in" class="h-4 w-4"></i> Login</a>'}
+      <nav class="flex items-center gap-3">
+        ${config.auth.user?.role === 'admin' ? `
+          <a class="btn btn-secondary h-10" href="/admin">
+            <i data-lucide="layout-dashboard" class="h-4 w-4 text-slate-400"></i>
+            Admin
+          </a>
+        ` : ''}
+        ${config.auth.user ? `
+          <div class="flex items-center gap-1 rounded-full bg-slate-100 pl-4 pr-1 py-1 border border-slate-200">
+            <span class="text-xs font-bold text-slate-600">${escapeHTML(config.auth.user.email)}</span>
+            <button id="logout" class="btn btn-ghost h-8 w-8 p-0 rounded-full hover:bg-white" title="Logout">
+              <i data-lucide="log-out" class="h-3.5 w-3.5 text-slate-400"></i>
+            </button>
+          </div>
+        ` : `
+          <a class="btn btn-secondary h-10" href="/login">
+            <i data-lucide="user" class="h-4 w-4 text-slate-400"></i>
+            Sign In
+          </a>
+        `}
       </nav>
     </header>
   `;
@@ -402,8 +695,15 @@ function escapeHTML(value: string) {
   return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char] || char));
 }
 
-function activateIcons() {
-  createIcons({ icons: { Upload, Settings, LogIn, ShieldCheck, Download, RefreshCw, XCircle, Pause, Play, FileVideo, FileAudio, FileImage, Activity } });
+export function activateIcons() {
+  createIcons({ 
+    icons: { 
+      Upload, Settings, LogIn, ShieldCheck, Download, RefreshCw, XCircle, Pause, Play, FileVideo, FileAudio, FileImage, Activity,
+      Plus, Layers, LayoutDashboard, LogOut, User, Trash2, X, FileWarning, Video, Music, Image, Settings2, AlertCircle, Files,
+      Zap, UploadCloud, Clock, UserMinus, UserPlus, History, Filter, Shield, Edit3, UserCheck, UserX, ChevronLeft, ChevronRight, ArrowLeft,
+      RotateCcw, Save, Info, HardDrive, Cpu, ShieldAlert, Copy, SearchX, ExternalLink, PauseCircle
+    } 
+  });
   document.querySelector('#logout')?.addEventListener('click', async () => {
     await logout();
     window.location.href = '/';

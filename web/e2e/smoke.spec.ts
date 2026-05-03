@@ -21,7 +21,9 @@ test('admin panel renders empty tables', async ({ page, request }) => {
   await page.getByRole('button', { name: 'Login' }).click();
   await page.waitForURL('**/admin');
 
-  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Recent jobs' })).toBeVisible();
-  await expect(page.locator('body')).toContainText('No records yet.');
+  await expect(page.getByRole('heading', { name: 'Admin' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Users' })).toBeVisible();
+  await page.getByRole('button', { name: 'Jobs' }).click();
+  await expect(page.getByRole('heading', { name: 'Jobs' })).toBeVisible();
+  await expect(page.locator('body')).toContainText('No records found.');
 });

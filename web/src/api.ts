@@ -1,13 +1,12 @@
+import type { Catalog } from './catalog';
+
 export type SessionUser = {
   user?: { id: string; email: string; role: 'admin' | 'user'; disabled: boolean };
   csrfToken?: string;
 };
 
 export type AppConfig = {
-  catalog: {
-    formats: Array<{ id: string; label: string; mediaType: string; inputs: string[] }>;
-    presets: string[];
-  };
+  catalog: Catalog;
   settings: Record<string, string>;
   setupNeeded: boolean;
   auth: SessionUser;
