@@ -1,11 +1,21 @@
 services:
   cloudconv:
+    build:
+      context: .
+      network: host
     image: kirari04/cloudconv:latest
     ports:
       - 3000:3000
-    # volumes:
-      # - ./uploads:/app/uploads:rw
-      # - ./converted:/app/converted:rw
+    volumes:
+      - ./data:/app/data:rw
+      - ./uploads:/app/uploads:rw
+      - ./converted:/app/converted:rw
     restart: always
     environment:
       - TZ=Europe/Berlin
+      - CLOUDCONV_ADDR=:3000
+      - CLOUDCONV_DB_PATH=/app/data/cloudconv.db
+      - CLOUDCONV_UPLOAD_DIR=/app/uploads
+      - CLOUDCONV_CONVERTED_DIR=/app/converted
+      # Set this before first-run setup in production.
+      # - CLOUDCONV_SETUP_TOKEN=change-me

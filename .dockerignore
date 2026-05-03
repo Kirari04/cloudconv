@@ -1,3 +1,7 @@
 converted/*
 uploads/*
+data/*
+.git/
+node_modules/
+web/dist/
 testdata/*

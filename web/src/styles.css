@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #f6f7f9;
+  color: #18202f;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.92), rgba(246,247,249,0.96)),
+    radial-gradient(circle at 0 0, rgba(30, 126, 111, 0.12), transparent 32rem);
+}
+
+button, input, select {
+  font: inherit;
+}
+
+.shell {
+  min-height: 100vh;
+}
+
+.panel {
+  border: 1px solid #d8dde8;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.dropzone {
+  border: 1.5px dashed #9aa6ba;
+  background: #ffffff;
+}
+
+.dropzone.dragging {
+  border-color: #187466;
+  background: #eefaf7;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.8rem;
+  font-weight: 650;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.btn-primary {
+  color: white;
+  background: #176b5f;
+}
+
+.btn-primary:hover {
+  background: #12584f;
+}
+
+.btn-secondary {
+  border: 1px solid #c7d0df;
+  background: #fff;
+  color: #263244;
+}
+
+.btn-secondary:hover {
+  background: #f1f4f8;
+}
+
+.btn-danger {
+  color: #fff;
+  background: #b42318;
+}
+
+.field {
+  width: 100%;
+  min-height: 2.5rem;
+  border: 1px solid #c7d0df;
+  border-radius: 0.5rem;
+  background: #fff;
+  padding: 0.55rem 0.7rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: #eef2f7;
+  color: #354156;
+}
+
+.progress-track {
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5eaf2;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: #1f8a7a;
+  transition: width 0.2s ease;
+}

@@ -1,2 +1,7 @@
 converted/*
 uploads/*
+data/*
+node_modules/
+web/dist/
+test-results/
+playwright-report/
