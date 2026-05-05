@@ -83,8 +83,16 @@ export function presetById(catalog: Partial<Catalog>, presetId: string) {
 
 export function presetEffectFor(catalog: Partial<Catalog>, presetId: string, type: MediaType, formatId: string) {
   const preset = presetById(catalog, presetId);
-  const key: PresetEffectKey = type === 'video' && formatId === 'gif' ? 'gif' : type;
+  const key = presetEffectKeyFor(type, catalog.formats?.find((format) => format.id === formatId));
   return preset?.effects?.[key];
+}
+
+export function presetEffectKeyFor(type: MediaType, format?: FormatOption): PresetEffectKey {
+  if (format?.id === 'gif') return 'gif';
+  if (format?.mediaType === 'video' || format?.mediaType === 'audio' || format?.mediaType === 'image') {
+    return format.mediaType;
+  }
+  return type;
 }
 
 export function recommendedCodecLabel(format: FormatOption | undefined, kind: 'video' | 'audio', selectedId = '') {
@@ -101,7 +109,8 @@ export function presetSummaryRows(
   format: FormatOption | undefined,
   effect: PresetEffect | undefined
 ): PresetSummaryRow[] {
-  if (type === 'video' && format?.id === 'gif') {
+  const key = presetEffectKeyFor(type, format);
+  if (key === 'gif') {
     const defaultWidth = numberValue(effect, 'maxWidth');
     const defaultFPS = numberValue(effect, 'framerate');
     const width = numberOption(options, 'maxWidth');
@@ -114,7 +123,7 @@ export function presetSummaryRows(
     ];
   }
 
-  if (type === 'video') {
+  if (key === 'video') {
     const defaultHeight = numberValue(effect, 'maxHeight');
     const height = numberOption(options, 'maxHeight');
     const fps = numberOption(options, 'framerate');
@@ -127,7 +136,7 @@ export function presetSummaryRows(
     ];
   }
 
-  if (type === 'image') {
+  if (key === 'image') {
     const defaultQuality = numberValue(effect, 'quality');
     const quality = numberOption(options, 'quality');
     const width = numberOption(options, 'maxWidth');
@@ -149,18 +158,19 @@ export function presetSummaryRows(
 export function presetOptionLabel(catalog: Partial<Catalog>, presetId: string, type: MediaType, formatId: string) {
   const preset = presetById(catalog, presetId);
   const effect = presetEffectFor(catalog, presetId, type, formatId);
+  const key = presetEffectKeyFor(type, catalog.formats?.find((format) => format.id === formatId));
   const label = preset?.label || titleCase(presetId);
   if (!effect) return label;
-  if (type === 'video' && formatId === 'gif') {
+  if (key === 'gif') {
     const width = numberValue(effect, 'maxWidth');
     const fps = numberValue(effect, 'framerate');
     return width && fps ? `${label} - ${width}px / ${fps} FPS` : label;
   }
-  if (type === 'video') {
+  if (key === 'video') {
     const height = numberValue(effect, 'maxHeight');
     return height ? `${label} - max ${height}p` : label;
   }
-  if (type === 'image') {
+  if (key === 'image') {
     const quality = numberValue(effect, 'quality');
     return quality ? `${label} - ${quality}% quality` : label;
   }
@@ -174,12 +184,37 @@ export function presetPlaceholder(catalog: Partial<Catalog>, presetId: string, t
 }
 
 export function resetInvalidCodecOptions(options: Record<string, number | boolean | string>, format?: FormatOption) {
+  const key = format ? presetEffectKeyFor('video', format) : undefined;
   if (format?.id === 'gif') {
     options.videoCodec = '';
     options.audioCodec = '';
+    delete options.maxHeight;
+    delete options.quality;
     delete options.videoBitrate;
     delete options.audioBitrate;
     return;
+  }
+  if (key === 'audio') {
+    options.videoCodec = '';
+    options.audioCodec = '';
+    delete options.maxHeight;
+    delete options.maxWidth;
+    delete options.videoBitrate;
+    delete options.framerate;
+    delete options.quality;
+    delete options.loop;
+  } else if (key === 'image') {
+    options.videoCodec = '';
+    options.audioCodec = '';
+    delete options.maxHeight;
+    delete options.videoBitrate;
+    delete options.audioBitrate;
+    delete options.framerate;
+    delete options.loop;
+  } else if (key === 'video') {
+    delete options.maxWidth;
+    delete options.quality;
+    delete options.loop;
   }
   if (!format?.videoCodecs?.some((codec) => codec.id === options.videoCodec)) {
     options.videoCodec = '';

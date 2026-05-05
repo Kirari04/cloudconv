@@ -108,6 +108,52 @@ describe('catalog helpers', () => {
     expect(rows).toContainEqual({ label: 'Audio bitrate', value: 'Auto unless changed' });
   });
 
+  it('uses target output kind for video inputs converted to audio', () => {
+    const catalog = codecCatalog();
+    const format = formatById(catalog, 'mp3');
+    const effect = presetEffectFor(catalog, 'balanced', 'video', 'mp3');
+    const rows = presetSummaryRows('video', {}, format, effect);
+    expect(effect?.summary).toBe('Does not change audio settings by itself.');
+    expect(rows).toContainEqual({ label: 'Preset effect', value: 'No audio changes' });
+    expect(rows.some((row) => row.label === 'Max height')).toBe(false);
+    expect(presetOptionLabel(catalog, 'balanced', 'video', 'mp3')).toBe('Balanced - no preset audio changes');
+  });
+
+  it('uses target output kind for video inputs converted to images', () => {
+    const catalog = codecCatalog();
+    const format = formatById(catalog, 'jpg');
+    const effect = presetEffectFor(catalog, 'high', 'video', 'jpg');
+    const rows = presetSummaryRows('video', {}, format, effect);
+    expect(effect?.values.quality).toBe(95);
+    expect(rows).toContainEqual({ label: 'Quality', value: '95%' });
+    expect(rows.some((row) => row.label === 'Max height')).toBe(false);
+    expect(presetOptionLabel(catalog, 'high', 'video', 'jpg')).toBe('High - 95% quality');
+  });
+
+  it('clears stale options that do not apply to the selected target kind', () => {
+    const catalog = codecCatalog();
+    const audioOptions: Record<string, string | number | boolean> = {
+      maxHeight: 720,
+      videoBitrate: 2500,
+      videoCodec: 'h264',
+      audioCodec: 'aac',
+      audioBitrate: 128
+    };
+    resetInvalidCodecOptions(audioOptions, formatById(catalog, 'mp3'));
+    expect(audioOptions.maxHeight).toBeUndefined();
+    expect(audioOptions.videoBitrate).toBeUndefined();
+    expect(audioOptions.videoCodec).toBe('');
+    expect(audioOptions.audioCodec).toBe('');
+    expect(audioOptions.audioBitrate).toBe(128);
+
+    const imageOptions: Record<string, string | number | boolean> = { maxHeight: 720, quality: 86, maxWidth: 1280, audioBitrate: 128 };
+    resetInvalidCodecOptions(imageOptions, formatById(catalog, 'jpg'));
+    expect(imageOptions.maxHeight).toBeUndefined();
+    expect(imageOptions.audioBitrate).toBeUndefined();
+    expect(imageOptions.quality).toBe(86);
+    expect(imageOptions.maxWidth).toBe(1280);
+  });
+
   it('makes preset differences visible in option labels', () => {
     const catalog = codecCatalog();
     expect(presetOptionLabel(catalog, 'small', 'video', 'mp4')).toBe('Small - max 480p');
@@ -197,7 +243,13 @@ function codecCatalog(): Catalog {
         id: 'mp3',
         label: 'MP3',
         mediaType: 'audio',
-        inputs: ['audio']
+        inputs: ['video', 'audio']
+      },
+      {
+        id: 'jpg',
+        label: 'JPG',
+        mediaType: 'image',
+        inputs: ['video', 'image']
       }
     ]
   };

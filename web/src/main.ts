@@ -2,6 +2,7 @@ import {
   Activity,
   AlertCircle,
   ArrowLeft,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -63,6 +64,7 @@ import {
   humanBytes,
   presetById,
   presetEffectFor,
+  presetEffectKeyFor,
   presetOptionLabel,
   presetPlaceholder,
   presetSummaryRows,
@@ -207,8 +209,8 @@ function renderConverter(config: AppConfig) {
           </button>
         </div>
         
-        <div class="space-y-6">
-          ${files.length === 0 ? '<p class="text-center text-sm text-slate-400 py-4">Add files to configure</p>' : ''}
+        <div class="space-y-10">
+          ${files.length === 0 ? '<p class="text-center text-sm text-slate-400 py-4 font-medium italic">Add files to configure</p>' : ''}
           ${Array.from(presentTypes).map((type) => groupControls(type, states[type], config)).join('')}
         </div>
 
@@ -220,11 +222,14 @@ function renderConverter(config: AppConfig) {
         ` : ''}
       </section>
     `;
-    options.querySelectorAll<HTMLSelectElement>('[data-format]').forEach((select) => {
-      select.addEventListener('change', () => {
-        const type = select.dataset.format as MediaType;
-        states[type].targetFormat = select.value;
-        resetInvalidCodecOptions(states[type].options, formatById(config.catalog, select.value));
+    options.querySelectorAll<HTMLButtonElement>('[data-set-format]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const [type, formatId] = (button.dataset.setFormat || '').split(':') as [MediaType, string];
+        states[type].targetFormat = formatId;
+        resetInvalidCodecOptions(states[type].options, formatById(config.catalog, formatId));
+        if (formatId === 'gif' && states[type].options.loop === undefined) {
+          states[type].options.loop = true;
+        }
         renderAll();
       });
     });
@@ -314,42 +319,83 @@ function renderConverter(config: AppConfig) {
 }
 
 function defaultGroupStates(config: AppConfig): Record<MediaType, GroupState> {
-  const first = (type: MediaType) => formatsFor(config.catalog, type)[0]?.id || 'mp4';
+  const first = (type: MediaType) => {
+    const formats = formatsFor(config.catalog, type);
+    return formats.find((format) => format.mediaType === type)?.id || formats[0]?.id || 'mp4';
+  };
+  const state = (type: MediaType): GroupState => {
+    const targetFormat = first(type);
+    return {
+      targetFormat,
+      preset: 'balanced',
+      advanced: false,
+      options: targetFormat === 'gif' ? { loop: true } : {}
+    };
+  };
   return {
-    video: { targetFormat: first('video'), preset: 'balanced', advanced: false, options: { loop: true } },
-    audio: { targetFormat: first('audio'), preset: 'balanced', advanced: false, options: {} },
-    image: { targetFormat: first('image'), preset: 'balanced', advanced: false, options: {} }
+    video: state('video'),
+    audio: state('audio'),
+    image: state('image')
   };
 }
 
 function groupControls(type: MediaType, state: GroupState, config: AppConfig) {
   const formats = formatsFor(config.catalog, type);
   const icon = type === 'video' ? 'video' : type === 'audio' ? 'music' : 'image';
+  
+  const groupedFormats = formats.reduce((acc, f) => {
+    const key = f.mediaType;
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(f);
+    return acc;
+  }, {} as Record<string, typeof formats>);
+
   return `
-    <div class="space-y-4">
+    <div class="space-y-6">
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2">
           <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-slate-600">
             <i data-lucide="${icon}" class="h-4 w-4"></i>
           </div>
-          <h3 class="text-sm font-bold capitalize text-slate-900">${type}</h3>
+          <h3 class="text-sm font-bold capitalize text-slate-900">${type} Settings</h3>
         </div>
         <button class="btn btn-ghost h-8 px-2 py-0 text-[11px] font-bold uppercase tracking-wider" data-advanced="${type}" type="button">
           <i data-lucide="settings-2" class="h-3.5 w-3.5"></i> ${state.advanced ? 'Simple' : 'Advanced'}
         </button>
       </div>
+
+      <div class="space-y-4">
+        <div class="text-[10px] font-black uppercase tracking-widest text-slate-400">Target Output Format</div>
+        <div class="flex flex-col gap-5">
+          ${Object.entries(groupedFormats).map(([group, list]) => `
+            <div class="space-y-2">
+              <div class="text-[9px] font-black uppercase tracking-widest text-slate-400/80 px-1 border-l-2 border-slate-100 ml-1 pl-2">${group}</div>
+              <div class="grid grid-cols-3 gap-2">
+                ${list.map((format) => `
+                  <button 
+                    class="group relative flex flex-col items-center justify-center rounded-xl border-2 p-3 transition-all ${state.targetFormat === format.id ? 'border-brand-500 bg-brand-50/50 ring-4 ring-brand-500/10' : 'border-slate-100 bg-white hover:border-slate-300 hover:bg-slate-50'}"
+                    type="button"
+                    data-set-format="${type}:${format.id}"
+                  >
+                    <span class="text-xs font-black uppercase tracking-tight ${state.targetFormat === format.id ? 'text-brand-700' : 'text-slate-600'}">${format.id}</span>
+                    <span class="mt-0.5 text-[8px] font-bold text-slate-400 opacity-0 transition-opacity group-hover:opacity-100 absolute bottom-1 truncate w-full text-center px-1">${format.label}</span>
+                    ${state.targetFormat === format.id ? `
+                      <div class="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-brand-600 text-white shadow-sm ring-2 ring-white">
+                        <i data-lucide="check" class="h-2.5 w-2.5"></i>
+                      </div>
+                    ` : ''}
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
       
-      <div class="grid gap-3">
+      <div class="grid gap-4 pt-2">
         <label class="space-y-1.5">
-          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Output Format</span>
-          <select class="field" data-format="${type}">
-            ${formats.map((format) => `<option value="${format.id}" ${state.targetFormat === format.id ? 'selected' : ''}>${format.label}</option>`).join('')}
-          </select>
-        </label>
-        
-        <label class="space-y-1.5">
-          <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Preset</span>
-          <select class="field" data-preset="${type}">
+          <span class="text-[10px] font-black uppercase tracking-widest text-slate-400">Processing Preset</span>
+          <select class="field bg-slate-50/50" data-preset="${type}">
             ${config.catalog.presets.map((preset) => `<option value="${preset}" ${state.preset === preset ? 'selected' : ''}>${escapeHTML(presetOptionLabel(config.catalog, preset, type, state.targetFormat))}</option>`).join('')}
           </select>
         </label>
@@ -357,7 +403,8 @@ function groupControls(type: MediaType, state: GroupState, config: AppConfig) {
         ${presetSummary(type, state, config)}
 
         ${state.advanced ? `
-          <div class="mt-2 space-y-3 rounded-xl bg-slate-50/50 p-4 border border-slate-100">
+          <div class="mt-2 space-y-4 rounded-2xl bg-slate-50/50 p-5 border border-slate-100 shadow-inner">
+            <div class="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Technical Overrides</div>
             ${advancedControls(type, state, config)}
           </div>
         ` : ''}
@@ -395,20 +442,21 @@ function presetSummary(type: MediaType, state: GroupState, config: AppConfig) {
 }
 
 function advancedControls(type: MediaType, state: GroupState, config: AppConfig) {
-  if (type === 'video') {
-    const format = formatById(config.catalog, state.targetFormat);
-    if (state.targetFormat === 'gif') {
-      return `
-        <div class="grid gap-4">
-          ${numberField(type, 'maxWidth', 'Width', state.options.maxWidth, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'maxWidth', '480'))}
-          ${numberField(type, 'framerate', 'FPS', state.options.framerate, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'framerate', '15'))}
-          <label class="flex items-center gap-2.5 cursor-pointer">
-            <input type="checkbox" class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20" data-option="${type}:loop" ${(state.options.loop ?? true) ? 'checked' : ''}/>
-            <span class="text-xs font-semibold text-slate-700">Loop GIFs</span>
-          </label>
-        </div>
-      `;
-    }
+  const format = formatById(config.catalog, state.targetFormat);
+  const effectKey = presetEffectKeyFor(type, format);
+  if (effectKey === 'gif') {
+    return `
+      <div class="grid gap-4">
+        ${numberField(type, 'maxWidth', 'Width', state.options.maxWidth, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'maxWidth', '480'))}
+        ${numberField(type, 'framerate', 'FPS', state.options.framerate, presetPlaceholder(config.catalog, state.preset, type, state.targetFormat, 'framerate', '15'))}
+        <label class="flex items-center gap-2.5 cursor-pointer">
+          <input type="checkbox" class="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500/20" data-option="${type}:loop" ${(state.options.loop ?? true) ? 'checked' : ''}/>
+          <span class="text-xs font-semibold text-slate-700">Loop GIFs</span>
+        </label>
+      </div>
+    `;
+  }
+  if (effectKey === 'video') {
     const audioSupportsBitrate = audioCodecSupportsBitrate(format, String(state.options.audioCodec || ''));
     return `
       <div class="grid gap-4">
@@ -423,7 +471,7 @@ function advancedControls(type: MediaType, state: GroupState, config: AppConfig)
       </div>
     `;
   }
-  if (type === 'audio') {
+  if (effectKey === 'audio') {
     return `<div class="grid gap-4">${numberField(type, 'audioBitrate', 'Audio kbps', state.options.audioBitrate, '192')}</div>`;
   }
   return `
@@ -701,7 +749,7 @@ export function activateIcons() {
       Upload, Settings, LogIn, ShieldCheck, Download, RefreshCw, XCircle, Pause, Play, FileVideo, FileAudio, FileImage, Activity,
       Plus, Layers, LayoutDashboard, LogOut, User, Trash2, X, FileWarning, Video, Music, Image, Settings2, AlertCircle, Files,
       Zap, UploadCloud, Clock, UserMinus, UserPlus, History, Filter, Shield, Edit3, UserCheck, UserX, ChevronLeft, ChevronRight, ArrowLeft,
-      RotateCcw, Save, Info, HardDrive, Cpu, ShieldAlert, Copy, SearchX, ExternalLink, PauseCircle
+      RotateCcw, Save, Info, HardDrive, Cpu, ShieldAlert, Copy, SearchX, ExternalLink, PauseCircle, Check
     } 
   });
   document.querySelector('#logout')?.addEventListener('click', async () => {
