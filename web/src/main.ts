@@ -73,7 +73,7 @@ import {
   type MediaType
 } from './catalog';
 import { renderAdmin } from './admin/index';
-import { uploadAndConvert, type UploadController, type UploadProgress } from './upload';
+import { uploadAndConvert, type UploadController, type UploadOptions, type UploadProgress } from './upload';
 
 type FileItem = {
   id: string;
@@ -81,6 +81,9 @@ type FileItem = {
   type: MediaType | 'unknown';
   progress?: UploadProgress;
   controller?: UploadController;
+  queued?: boolean;
+  queuedOptions?: UploadOptions;
+  uploadSlotReleased?: boolean;
 };
 
 type GroupState = {
@@ -126,6 +129,9 @@ async function boot() {
 function renderConverter(config: AppConfig) {
   const files: FileItem[] = [];
   const states = defaultGroupStates(config);
+  const configuredUploadConcurrency = Number.parseInt(String(config.settings.max_active_uploads_per_ip || '1'), 10);
+  const maxUploadConcurrency = configuredUploadConcurrency > 0 ? configuredUploadConcurrency : 1;
+  let activeUploads = 0;
   appRoot.innerHTML = `
     <main class="shell mx-auto flex w-full max-w-6xl flex-col gap-8 px-6 py-10">
       ${topbar(config)}
@@ -204,7 +210,7 @@ function renderConverter(config: AppConfig) {
       <section class="panel sticky top-10 flex flex-col gap-6 rounded-2xl p-6">
         <div class="flex items-center justify-between border-b border-slate-100 pb-4">
           <h2 class="font-bold text-slate-900">Settings</h2>
-          <button id="start-all" class="btn btn-primary h-9 px-4 py-0" type="button" ${files.length === 0 ? 'disabled' : ''}>
+          <button id="start-all" class="btn btn-primary h-9 px-4 py-0" type="button" ${startableFiles().length === 0 ? 'disabled' : ''}>
             <i data-lucide="play" class="h-3.5 w-3.5"></i> Start
           </button>
         </div>
@@ -297,23 +303,54 @@ function renderConverter(config: AppConfig) {
   }
 
   function startAll() {
-    files.filter((item) => item.type !== 'unknown' && !item.controller).forEach((item) => {
+    startableFiles().forEach((item) => {
       const state = states[item.type as MediaType];
-      item.controller = uploadAndConvert(
-        item.file,
-        {
-          targetFormat: state.targetFormat,
-          preset: state.preset,
-          options: state.options
-        },
-        (progress) => {
-          item.progress = progress;
-          renderFiles();
-          activateIcons();
-        }
-      );
+      item.queued = true;
+      item.queuedOptions = {
+        targetFormat: state.targetFormat,
+        preset: state.preset,
+        options: { ...state.options }
+      };
+      item.progress = {
+        phase: 'queued',
+        uploadPercent: 0,
+        convertPercent: 0,
+        message: 'Waiting to upload'
+      };
     });
+    renderAll();
+    pumpUploadQueue();
+  }
+
+  function startableFiles() {
+    return files.filter((item) => item.type !== 'unknown' && !item.controller && !item.queued);
+  }
+
+  function pumpUploadQueue() {
+    while (activeUploads < maxUploadConcurrency) {
+      const item = files.find((entry) => entry.queued && !entry.controller && entry.type !== 'unknown');
+      if (!item) return;
+      const queuedOptions = item.queuedOptions;
+      if (!queuedOptions) {
+        item.queued = false;
+        continue;
+      }
+      item.queued = false;
+      item.uploadSlotReleased = false;
+      activeUploads += 1;
+      item.controller = uploadAndConvert(item.file, queuedOptions, (progress) => {
+        item.progress = progress;
+        if (!item.uploadSlotReleased && progress.phase !== 'uploading') {
+          item.uploadSlotReleased = true;
+          activeUploads = Math.max(0, activeUploads - 1);
+          queueMicrotask(pumpUploadQueue);
+        }
+        renderFiles();
+        activateIcons();
+      });
+    }
     renderFiles();
+    activateIcons();
   }
   renderAll();
 }
@@ -517,7 +554,7 @@ function fileRow(item: FileItem) {
     badgeColor = 'badge badge-success';
   } else if (progress?.phase === 'error') {
     statusColor = 'text-red-600';
-  } else if (progress?.phase === 'converting' || progress?.phase === 'uploading') {
+  } else if (progress?.phase === 'queued' || progress?.phase === 'converting' || progress?.phase === 'uploading') {
     statusColor = 'text-brand-600';
     badgeColor = 'badge badge-brand';
   }
